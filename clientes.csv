@@ -1,0 +1,4 @@
+id_cliente,nombre,correo,direccion,telefono
+1,Arturo,arturo@correo.com,Calle #1,4421234567
+2,Juan,juan@correo.com,Calle #2,4421234568
+3,Pedro,pedro@correo.com,Calle #3,4421234569
