@@ -1,0 +1,60 @@
+import csv
+import os
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+app = FastAPI(
+    title="Departamento de Inventario",
+    description="Servicio encargado de la custodia y control de existencias físicas.",
+    version="1.0.0"
+)
+
+FILE_NAME = "inventario.csv"
+HEADERS = ["id_producto", "cantidad"]
+
+# Inicializar Archivo Oficial si no existe
+if not os.path.exists(FILE_NAME):
+    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(HEADERS)
+
+# Contrato de Servicio (Formato Oficial)
+class MovimientoInventario(BaseModel):
+    id_producto: int = Field(..., example=1) # type: ignore
+    cantidad: int = Field(..., gt=0, example=5) # type: ignore
+
+def leer_inventario():
+    with open(FILE_NAME, "r", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+@app.get("/inventario/{id_producto}", tags=["Consultas"])
+def consultar_stock(id_producto: int):
+    """Consulta la cantidad disponible de un producto específico."""
+    items = leer_inventario()
+    for item in items:
+        if int(item['id_producto']) == id_producto:
+            return {"id_producto": id_producto, "cantidad": int(item['cantidad'])}
+    raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
+
+@app.post("/inventario/descontar", tags=["Operaciones"])
+def descontar_stock(mov: MovimientoInventario):
+    """Actualiza el stock tras una venta exitosa [2, 6]."""
+    items = leer_inventario()
+    encontrado = False
+    for item in items:
+        if int(item['id_producto']) == mov.id_producto:
+            nueva_cantidad = int(item['cantidad']) - mov.cantidad
+            if nueva_cantidad < 0:
+                raise HTTPException(status_code=400, detail="Stock insuficiente en almacén")
+            item['cantidad'] = str(nueva_cantidad)
+            encontrado = True
+            break
+    
+    if not encontrado:
+        raise HTTPException(status_code=404, detail="Producto no encontrado en inventario")
+        
+    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=HEADERS)
+        writer.writeheader()
+        writer.writerows(items)
+        
+    return {"mensaje": "Descuento de inventario aplicado exitosamente"}
