@@ -1,3 +1,4 @@
-id_producto,descripcion,precio
-2,Barbacoa,750.0
-3,Carnitas,600.0
+id_producto,descripcion,precio,activo
+2,Barbacoa,750.0,True
+3,Carnitas,600.0,True
+4,Pollo,500.0,True

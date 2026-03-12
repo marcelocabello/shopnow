@@ -26,25 +26,25 @@ iniciar_servicios() {
     echo "========================================"
     echo ""
     echo "Clientes: Puerto 8000"
-    uvicorn serv_clientes:app --port 8000 > /dev/null 2>&1 &
+    uvicorn serv_clientes:app --port 8000 --reload > /dev/null 2>&1 &
     CLIENTE_PID=$!
     echo "  PID: $CLIENTE_PID"
     echo ""
     
     echo "Productos: Puerto 8001"
-    uvicorn serv_productos:app --port 8001 > /dev/null 2>&1 &
+    uvicorn serv_productos:app --port 8001 --reload > /dev/null 2>&1 &
     PRODUCTO_PID=$!
     echo "  PID: $PRODUCTO_PID"
     echo ""
     
     echo "Pedidos: Puerto 8002"
-    uvicorn serv_pedidos:app --port 8002 > /dev/null 2>&1 &
+    uvicorn serv_pedidos:app --port 8002 --reload > /dev/null 2>&1 &
     PEDIDO_PID=$!
     echo "  PID: $PEDIDO_PID"
     echo ""
     
     echo "Inventario: Puerto 8003"
-    uvicorn serv_inventario:app --port 8003 > /dev/null 2>&1 &
+    uvicorn serv_inventario:app --port 8003 --reload > /dev/null 2>&1 &
     INVENTARIO_PID=$!
     echo "  PID: $INVENTARIO_PID"
     echo ""

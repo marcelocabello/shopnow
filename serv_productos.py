@@ -16,7 +16,7 @@ app = FastAPI(
 )
 
 FILE_NAME = "productos.csv"
-HEADERS = ["id_producto", "descripcion", "precio"]
+HEADERS = ["id_producto", "descripcion", "precio", "activo"]
 
 if not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
@@ -26,14 +26,17 @@ class Producto(BaseModel):
     id_producto: int = Field(..., example=1) # type: ignore
     descripcion: str = Field(..., min_length=3, example="Laptop Gamer") # type: ignore
     precio: float = Field(..., gt=0, example=15000.0) # type: ignore
+    activo: bool = Field(..., example=True) # type: ignore
 
 class ProductoRegistro(BaseModel):
     descripcion: str = Field(..., min_length=3, example="Laptop Gamer") # type: ignore
     precio: float = Field(..., gt=0, example=15000.0) # type: ignore
+    activo: bool = Field(..., example=True) # type: ignore
 
 class ProductoUpdate(BaseModel):
     descripcion: Optional[str] = Field(None, min_length=3, example="Laptop Gamer") # type: ignore
     precio: Optional[float] = Field(None, gt=0, example=15000.0) # type: ignore
+    activo: Optional[bool] = Field(None, example=True) # type: ignore
 
 def leer_productos():
     with open(FILE_NAME, "r", encoding="utf-8") as f:
@@ -54,7 +57,8 @@ def leer_productos():
                         {
                             "id_producto": 1,
                             "descripcion": "Laptop Gamer",
-                            "precio": 15000.0
+                            "precio": 15000.0,
+                            "activo": True
                         }
                     ]
                 }

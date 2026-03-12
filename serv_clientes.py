@@ -18,7 +18,7 @@ app = FastAPI(
 # /home/boomer/ITQ/SOA/ShopNow_PHP/shopnow/var/db_clientes.csv
 # /home/boomer/ITQ/SOA/ShopNow/clientes.csv
 FILE_NAME = "clientes.csv"
-HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono"]
+HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono", "activo"]
 
 # Inicializar archivo si no existe
 if not os.path.exists(FILE_NAME):
@@ -30,19 +30,22 @@ class Cliente(BaseModel):
     nombre: str = Field(..., min_length=3, example="Juan Pérez") # type: ignore
     correo: EmailStr = Field(..., example="juan@ejemplo.com") # type: ignore
     direccion: str = Field(..., example="Calle 123") # type: ignore
-    telefono: str = Field(..., example="555-1234") # type: ignore
+    telefono: str = Field(..., min_length=10, max_length=10, example="4421234567") # type: ignore
+    activo: bool = Field(..., example=True) # type: ignore
 
 class ClienteRegistro(BaseModel):
     nombre: str = Field(..., min_length=3, example="Juan Pérez") # type: ignore
     correo: EmailStr = Field(..., example="juan@ejemplo.com") # type: ignore
     direccion: str = Field(..., example="Calle 123") # type: ignore
-    telefono: str = Field(..., example="555-1234") # type: ignore
+    telefono: str = Field(..., min_length=10, max_length=10, example="4421234567") # type: ignore
+    activo: bool = Field(..., example=True) # type: ignore
 
 class ClienteUpdate(BaseModel):
     nombre: Optional[str] = Field(None, min_length=3, example="Juan Pérez") # type: ignore
     correo: Optional[EmailStr] = Field(None, example="juan@ejemplo.com") # type: ignore
     direccion: Optional[str] = Field(None, example="Calle 123") # type: ignore
-    telefono: Optional[str] = Field(None, example="555-1234") # type: ignore
+    telefono: Optional[str] = Field(None, min_length=10, max_length=10, example="4421234567") # type: ignore
+    activo: Optional[bool] = Field(None, example=True) # type: ignore
 
 def leer_clientes():
     with open(FILE_NAME, "r", encoding="utf-8") as f:
@@ -65,7 +68,8 @@ def leer_clientes():
                             "nombre": "Juan Pérez",
                             "correo": "juan@ejemplo.com",
                             "direccion": "Calle 123",
-                            "telefono": "555-1234"
+                            "telefono": "4421234567",
+                            "activo": "True"
                         }
                     ]
                 }
@@ -96,7 +100,7 @@ def obtener_clientes():
                 "application/json": {
                     "example": {
                         "mensaje": "Cliente registrado en el archivo CSV",
-                        "id_cliente": 101
+                        "id_cliente": 1
                     }
                 }
             }
@@ -133,7 +137,7 @@ def registrar_cliente(nuevo: ClienteRegistro):
         siguiente_id = 1
     
     with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([siguiente_id, nuevo.nombre, nuevo.correo, nuevo.direccion, nuevo.telefono])
+        csv.writer(f).writerow([siguiente_id, nuevo.nombre, nuevo.correo, nuevo.direccion, nuevo.telefono, nuevo.activo])
     return {"mensaje": "Cliente registrado en el archivo CSV", "id_cliente": siguiente_id, "status": "success"}
 
 @app.delete(
@@ -185,7 +189,8 @@ def eliminar_cliente(id_cliente: int):
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
     
-    clientes.remove(cliente)
+    # clientes.remove(cliente)
+    cliente['activo'] = "False"  # Marcar como inactivo en lugar de eliminar físicamente
     
     # Reescribir el archivo CSV sin el cliente eliminado
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
@@ -193,7 +198,7 @@ def eliminar_cliente(id_cliente: int):
         writer.writeheader()
         writer.writerows(clientes)
     
-    return {"mensaje": "Cliente eliminado exitosamente", "status": "success"}
+    return {"mensaje": "Cliente eliminado (inactivado) exitosamente", "status": "success"}
 
 @app.patch(
     "/clientes/{id_cliente}",
@@ -241,6 +246,7 @@ def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate):
             - correo (opcional): Nuevo email válido
             - direccion (opcional): Nueva dirección
             - telefono (opcional): Nuevo teléfono de contacto
+            - activo (opcional): Nuevo estado de actividad del cliente
     
     Returns:
         dict: Diccionario con mensaje de confirmación de actualización.
@@ -262,6 +268,8 @@ def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate):
         cliente['direccion'] = update.direccion
     if update.telefono is not None:
         cliente['telefono'] = update.telefono
+    if update.activo is not None:
+        cliente['activo'] = update.activo
     
     # Reescribir el archivo CSV con los cambios
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
