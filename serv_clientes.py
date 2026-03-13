@@ -1,15 +1,19 @@
 import csv
 import os
+import json
+import pika
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
+from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
 
 app = FastAPI(
     title="Departamento de Clientes",
     description="Servicio encargado de la custodia y registro oficial de los clientes de la empresa. \n\n" \
     "Este servicio actúa como el punto central de integración para la validación de clientes en los procesos de venta y atención al cliente. \n\n" \
-    "Ejecutar en puerto **8000** y asegurarse de que los servicios de Pedidos (8002) y Productos (8001) estén activos para su correcto funcionamiento.",
-    version="2.0.0",
+    "Ejecutar en puerto **8000** y asegurarse de que los servicios de Pedidos (8002) y Productos (8001) estén activos para su correcto funcionamiento. \n\n" \
+    "**Versión RabbitMQ**: Ahora responde a solicitudes a través de un bus de mensajería.",
+    version="3.0.0 - RabbitMQ",
     contact={
         "name": "Arturo Barajas, Profesor de SOA - TecNM Querétaro",
     }
@@ -24,6 +28,9 @@ HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono", "activo"]
 if not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(HEADERS)
+
+# Cliente RabbitMQ global
+mq_client = RabbitMQClient(host='localhost', port=5672)
 
 class Cliente(BaseModel):
     id_cliente: int = Field(..., example=101, description="ID numérico único") # type: ignore
@@ -278,3 +285,80 @@ def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate):
         writer.writerows(clientes)
     
     return {"mensaje": "Cliente actualizado parcialmente exitosamente", "status": "success"}
+
+
+# ============================================================================
+# MANEJADORES DE MENSAJES RABBITMQ
+# ============================================================================
+
+def handle_cliente_message(ch, method, properties, body):
+    """
+    Maneja mensajes de solicitud sobre clientes desde RabbitMQ.
+    
+    Operaciones soportadas:
+    - validate_cliente: Verifica si un cliente existe
+    """
+    try:
+        message = json.loads(body)
+        print(f"📨 Mensaje recibido en Clientes: {message}")
+        
+        # Obtener la información de respuesta
+        reply_to = properties.reply_to
+        correlation_id = properties.correlation_id
+        
+        # Procesar la solicitud
+        id_cliente = message.get('id_cliente')
+        clientes = leer_clientes()
+        existe = any(int(c['id_cliente']) == id_cliente for c in clientes)
+        
+        response = {'existe': existe, 'id_cliente': id_cliente}
+        
+        # Enviar respuesta
+        mq_client.channel.basic_publish(
+            exchange='',
+            routing_key=reply_to,
+            body=json.dumps(response),
+            properties=pika.BasicProperties(
+                correlation_id=correlation_id
+            )
+        )
+        
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print(f"✓ Respuesta enviada: {response}")
+        
+    except Exception as e:
+        print(f"Error procesando mensaje de clientes: {e}")
+        ch.basic_nack(delivery_tag=method.delivery_tag)
+
+
+@app.on_event("startup")
+def startup_event():
+    """Evento de inicio: conectar a RabbitMQ y iniciar consumidor"""
+    try:
+        import pika
+        mq_client.connect()
+        
+        # Declarar exchange
+        mq_client.declare_exchange('servicios', exchange_type='direct')
+        
+        # Declarar y vincular cola para solicitudes de validación
+        mq_client.declare_queue('clientes_requests')
+        mq_client.bind_queue('clientes_requests', 'servicios', ROUTING_KEYS['validate_cliente'])
+        
+        # Iniciar consumidor en thread separado
+        mq_client.start_consumer_thread('clientes_requests', handle_cliente_message)
+        
+        print("✓ Servicio de Clientes iniciado y escuchando en RabbitMQ")
+    except Exception as e:
+        print(f"✗ Error al conectar a RabbitMQ en startup: {e}")
+        raise
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    """Evento de cierre: desconectar de RabbitMQ"""
+    try:
+        mq_client.close()
+        print("✓ Servicio de Clientes desconectado de RabbitMQ")
+    except Exception as e:
+        print(f"Error al desconectar de RabbitMQ: {e}")
