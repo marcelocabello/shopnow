@@ -384,6 +384,7 @@ def startup_event():
     """Evento de inicio: conectar a RabbitMQ y iniciar consumidor"""
     try:
         import pika
+        print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
         
         # Declarar exchange
@@ -399,8 +400,9 @@ def startup_event():
         
         print("✓ Servicio de Inventario iniciado y escuchando en RabbitMQ")
     except Exception as e:
-        print(f"✗ Error al conectar a RabbitMQ en startup: {e}")
-        raise
+        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
+        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
+        # No lanzamos la excepción para permitir que el servicio siga funcionando
 
 
 @app.on_event("shutdown")

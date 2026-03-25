@@ -30,6 +30,7 @@ class RabbitMQClient:
         self.channel: Optional[Any] = None
         self.reply_queue: Optional[str] = None
         self.callbacks: Dict[str, Callable] = {}
+        self.channel_lock = threading.Lock()  # Para sincronizar acceso al canal
         
     def connect(self):
         """Establece conexión con RabbitMQ."""
@@ -40,7 +41,9 @@ class RabbitMQClient:
                 port=self.port,
                 credentials=credentials,
                 connection_attempts=10,
-                retry_delay=1
+                retry_delay=1,
+                heartbeat=0,  # Disable heartbeat which can cause StreamLostError
+                blocked_connection_timeout=300
             )
             self.connection = BlockingConnection(parameters)
             self.channel = self.connection.channel()
@@ -108,7 +111,7 @@ class RabbitMQClient:
             )
         )
     
-    def request_reply(self, exchange: str, routing_key: str, message: Dict[str, Any], timeout: int = 5) -> Dict[str, Any]:
+    def request_reply(self, exchange: str, routing_key: str, message: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
         """
         Patrón Request-Reply: envía un mensaje y espera respuesta.
         
@@ -116,62 +119,79 @@ class RabbitMQClient:
             exchange: Exchange donde enviar
             routing_key: Routing key del servicio destino
             message: Mensaje a enviar
-            timeout: Segundos a esperar respuesta (default: 5)
+            timeout: Segundos a esperar respuesta (default: 30)
         
         Returns:
             Diccionario con la respuesta o None si timeout
         """
-        # Crear cola de respuesta si no existe
-        if not self.reply_queue:
-            result = self.channel.queue_declare(queue='', exclusive=True)
-            self.reply_queue = result.method.queue
-        
-        # ID único para correlacionar request-reply
-        correlation_id = str(uuid.uuid4())
-        
-        # Agregar información de respuesta al mensaje
-        message['reply_to'] = self.reply_queue
-        message['correlation_id'] = correlation_id
-        
-        # Variable para almacenar respuesta
-        response = None
-        
-        def response_callback(ch, method, properties, body):
-            nonlocal response
-            # Verificar que es la respuesta correcta
-            if properties.correlation_id == correlation_id:
-                response = json.loads(body)
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-        
-        # Suscribirse a la cola de respuesta
-        self.channel.basic_consume(
-            queue=self.reply_queue,
-            on_message_callback=response_callback,
-            auto_ack=False
-        )
-        
-        # Enviar request
-        self.publish(exchange, routing_key, message)
-        
-        # Esperar respuesta con timeout
-        start_time = time.time()
-        while response is None:
-            if time.time() - start_time > timeout:
-                print(f"⏱ Timeout esperando respuesta con correlation_id: {correlation_id}")
-                self.channel.stop_consuming()
-                return None
+        rr_connection = None
+        try:
+            # Crear una conexión completamente separada para request-reply
+            credentials = PlainCredentials('guest', 'guest')
+            parameters = ConnectionParameters(
+                host=self.host,
+                port=self.port,
+                credentials=credentials,
+                connection_attempts=3,
+                retry_delay=0.5,
+                heartbeat=0,
+                blocked_connection_timeout=300
+            )
+            rr_connection = BlockingConnection(parameters)
+            rr_channel = rr_connection.channel()
             
+            # ID único para esta solicitud
+            correlation_id = str(uuid.uuid4())
+            
+            # Declarar cola temporal exclusiva
+            result = rr_channel.queue_declare(queue='', exclusive=True)
+            reply_queue = result.method.queue
+            
+            print(f"📤 Request: {routing_key}")
+            
+            # Enviar request
+            rr_channel.basic_publish(
+                exchange=exchange,
+                routing_key=routing_key,
+                body=json.dumps(message),
+                properties=BasicProperties(
+                    reply_to=reply_queue,
+                    correlation_id=correlation_id,
+                    delivery_mode=DeliveryMode.Persistent
+                )
+            )
+            
+            # Esperar respuesta con timeout
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                method, properties, body = rr_channel.basic_get(queue=reply_queue, auto_ack=False)
+                
+                if method:
+                    # Verificar correlation_id
+                    if properties and properties.correlation_id == correlation_id:
+                        response = json.loads(body)
+                        rr_channel.basic_ack(delivery_tag=method.delivery_tag)
+                        print(f"📥 Response OK")
+                        return response
+                    else:
+                        # No es nuestra respuesta
+                        rr_channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                
+                time.sleep(0.05)
+            
+            print(f"⏱ Timeout para {routing_key}")
+            return None
+        
+        except Exception as e:
+            print(f"❌ Error request_reply: {e}")
+            return None
+        finally:
+            # Cerrar conexión separada
             try:
-                self.channel.connection.process_data_events(time_limit=0.1)
-            except Exception as e:
-                print(f"Error procesando eventos: {e}")
-                self.channel.stop_consuming()
-                return None
-        
-        # Detener consumidor temporal
-        self.channel.stop_consuming()
-        
-        return response
+                if rr_connection and not rr_connection.is_closed:
+                    rr_connection.close()
+            except:
+                pass
     
     def consume(self, queue_name: str, callback: Callable, auto_ack: bool = False):
         """

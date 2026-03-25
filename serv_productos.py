@@ -294,7 +294,9 @@ def handle_producto_message(ch, method, properties, body):
     """
     try:
         message = json.loads(body)
-        print(f"📨 Mensaje recibido en Productos: {message}")
+        print(f"📨📨 Mensaje recibido en Productos: {message}")
+        print(f"   - reply_to: {properties.reply_to if properties else 'NO_PROPS'}")
+        print(f"   - correlation_id: {properties.correlation_id if properties else 'NO_PROPS'}")
         
         # Obtener la información de respuesta
         reply_to = properties.reply_to
@@ -307,6 +309,8 @@ def handle_producto_message(ch, method, properties, body):
         
         response = {'existe': existe, 'id_producto': id_producto}
         
+        print(f"   - Respondiendo a: {reply_to} con correlation_id: {correlation_id}")
+        
         # Enviar respuesta
         mq_client.channel.basic_publish(
             exchange='',
@@ -318,10 +322,12 @@ def handle_producto_message(ch, method, properties, body):
         )
         
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(f"✓ Respuesta enviada: {response}")
+        print(f"✓✓ Respuesta enviada a {reply_to}: {response}")
         
     except Exception as e:
-        print(f"Error procesando mensaje de productos: {e}")
+        print(f"❌❌ Error procesando mensaje de productos: {e}")
+        import traceback
+        traceback.print_exc()
         ch.basic_nack(delivery_tag=method.delivery_tag)
 
 
@@ -330,6 +336,7 @@ def startup_event():
     """Evento de inicio: conectar a RabbitMQ y iniciar consumidor"""
     try:
         import pika
+        print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
         
         # Declarar exchange
@@ -344,8 +351,8 @@ def startup_event():
         
         print("✓ Servicio de Productos iniciado y escuchando en RabbitMQ")
     except Exception as e:
-        print(f"✗ Error al conectar a RabbitMQ en startup: {e}")
-        raise
+        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
+        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
 
 
 @app.on_event("shutdown")

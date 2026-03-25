@@ -2,3 +2,18 @@ id_cliente,nombre,correo,direccion,telefono,activo
 1,Arturo,arturo@correo.com,Calle #1,4421234567,False
 2,Juan,juan@correo.com,Calle #2,4421234568,True
 3,Pedro,pedro@correo.com,Calle #3,4421234569,False
+4,Maria,maria@correo.com,Calle #4,4421234570,True
+5,Ana,ana@correo.com,Calle #5,4421234571,True
+6,Luisa,luisa@correo.com,Calle #6,4421234572,True
+7,Carlos,carlos@correo.com,Calle #7,4421234573,True
+8,Jose,jose@correo.com,Calle #8,4421234574,True
+9,Laura,laura@correo.com,Calle #9,4421234575,True
+10,Diego,diego@correo.com,Calle #10,4421234576,True
+11,Juan Pérez,juan@example.com,Calle 123,4421234567,True
+12,Test User,test@example.com,123 Main St,4421234567,True
+13,Test Customer,test@test.com,123 Main St,4421234567,True
+14,Alice Johnson,alice@example.com,456 Oak Ave,4429876543,True
+15,Bob Smith,bob@test.com,789 Pine St,4425551234,True
+16,Carol Davis,carol@test.com,321 Elm St,4425559999,True
+17,Frank Johnson,frank@test.com,111 Oak Rd,4429999999,True
+18,Grace Martinez,grace@example.com,789 Elm Street,4425557777,True
