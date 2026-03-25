@@ -315,17 +315,17 @@ def handle_inventario_message(ch, method, properties, body):
     """
     try:
         message = json.loads(body)
-        operation = message.get('operation', 'get')
         print(f"📨 Mensaje recibido en Inventario: {message}")
         
         # Obtener la información de respuesta
         reply_to = properties.reply_to
         correlation_id = properties.correlation_id
+        routing_key = method.routing_key
         
         response = None
         
-        # Procesar según la operación
-        if operation == 'get' or 'get_inventario' in str(properties.routing_key or ''):
+        # Procesar según la routing key
+        if 'get' in routing_key:
             # Consultar stock
             id_producto = message.get('id_producto')
             items = leer_inventario()
@@ -336,7 +336,7 @@ def handle_inventario_message(ch, method, properties, body):
             if not response:
                 response = {'id_producto': id_producto, 'cantidad': 0, 'error': 'Producto no en inventario'}
         
-        elif operation == 'descontar' or 'descontar_inventario' in str(properties.routing_key or ''):
+        elif 'descontar' in routing_key:
             # Descontar inventario
             id_producto = message.get('id_producto')
             cantidad = message.get('cantidad')
@@ -347,7 +347,7 @@ def handle_inventario_message(ch, method, properties, body):
                 if int(item['id_producto']) == id_producto:
                     nueva_cantidad = int(item['cantidad']) - cantidad
                     if nueva_cantidad < 0:
-                        response = {'exito': False, 'error': 'Stock insuficiente'}
+                        response = {'exito': False, 'error': 'Stock insuficiente', 'id_producto': id_producto}
                     else:
                         item['cantidad'] = str(nueva_cantidad)
                         with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
@@ -359,7 +359,7 @@ def handle_inventario_message(ch, method, properties, body):
                     break
             
             if not exito and not response:
-                response = {'exito': False, 'error': 'Producto no encontrado'}
+                response = {'exito': False, 'error': 'Producto no encontrado', 'id_producto': id_producto}
         
         # Enviar respuesta
         mq_client.channel.basic_publish(

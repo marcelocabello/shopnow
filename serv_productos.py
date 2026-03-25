@@ -38,7 +38,7 @@ class Producto(BaseModel):
 class ProductoRegistro(BaseModel):
     descripcion: str = Field(..., min_length=3, example="Laptop Gamer") # type: ignore
     precio: float = Field(..., gt=0, example=15000.0) # type: ignore
-    activo: bool = Field(..., example=True) # type: ignore
+    activo: bool = Field(default=True, example=True) # type: ignore
 
 class ProductoUpdate(BaseModel):
     descripcion: Optional[str] = Field(None, min_length=3, example="Laptop Gamer") # type: ignore
@@ -122,6 +122,7 @@ def registrar_producto(nuevo: ProductoRegistro):
         nuevo (ProductoRegistro): Datos del producto a registrar.
             - descripcion: Descripción del producto (mínimo 3 caracteres)
             - precio: Precio unitario del producto (debe ser mayor a 0)
+            - activo (opcional): Estado del producto (por defecto: True)
     
     **Returns**:
 
@@ -137,7 +138,7 @@ def registrar_producto(nuevo: ProductoRegistro):
         siguiente_id = 1
     
     with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([siguiente_id, nuevo.descripcion, nuevo.precio])
+        csv.writer(f).writerow([siguiente_id, nuevo.descripcion, nuevo.precio, nuevo.activo])
     return {"mensaje": "Producto guardado exitosamente", "id_producto": siguiente_id, "status": "success"}
 
 @app.delete(

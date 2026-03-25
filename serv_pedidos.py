@@ -135,7 +135,9 @@ def crear_pedido(p: PedidoRegistro):
             message={'id_producto': p.id_producto}
         )
         
-        if not response or not response.get('existe'):
+        if response is None:
+            raise HTTPException(status_code=503, detail="Timeout esperando validación de producto")
+        if not response.get('existe'):
             raise HTTPException(status_code=400, detail="Producto no existe en el catálogo")
         
         # PASO 1b: Consultar inventario disponible (a través de RabbitMQ)
@@ -145,7 +147,9 @@ def crear_pedido(p: PedidoRegistro):
             message={'id_producto': p.id_producto}
         )
         
-        if not response:
+        if response is None:
+            raise HTTPException(status_code=503, detail="Timeout esperando consulta de inventario")
+        if not response or response.get('cantidad') == 0:
             raise HTTPException(status_code=400, detail="Producto sin registro de inventario")
         
         stock_actual = response.get('cantidad', 0)
@@ -159,7 +163,9 @@ def crear_pedido(p: PedidoRegistro):
             message={'id_cliente': p.id_cliente}
         )
         
-        if not response or not response.get('existe'):
+        if response is None:
+            raise HTTPException(status_code=503, detail="Timeout esperando validación de cliente")
+        if not response.get('existe'):
             raise HTTPException(status_code=400, detail="El cliente no existe en el padrón oficial")
         
         # PASO 3: Descontar inventario (a través de RabbitMQ)
@@ -169,7 +175,9 @@ def crear_pedido(p: PedidoRegistro):
             message={'id_producto': p.id_producto, 'cantidad': p.cantidad}
         )
         
-        if not response or not response.get('exito'):
+        if response is None:
+            raise HTTPException(status_code=503, detail="Timeout esperando descuento de inventario")
+        if not response.get('exito'):
             raise HTTPException(status_code=503, detail="Error al descontar inventario")
         
         # PASO 4: Persistir pedido localmente

@@ -1,7 +1,15 @@
 import pika
+from pika import (
+    exceptions,
+    PlainCredentials,
+    ConnectionParameters,
+    BlockingConnection,
+    BasicProperties,
+    DeliveryMode
+)
 import json
 import uuid
-from typing import Callable, Dict, Any
+from typing import Callable, Dict, Any, Optional
 import threading
 import time
 
@@ -18,26 +26,26 @@ class RabbitMQClient:
         """
         self.host = host
         self.port = port
-        self.connection = None
-        self.channel = None
-        self.reply_queue = None
-        self.callbacks = {}
+        self.connection: Optional[Any] = None
+        self.channel: Optional[Any] = None
+        self.reply_queue: Optional[str] = None
+        self.callbacks: Dict[str, Callable] = {}
         
     def connect(self):
         """Establece conexión con RabbitMQ."""
         try:
-            credentials = pika.PlainCredentials('guest', 'guest')
-            parameters = pika.ConnectionParameters(
+            credentials = PlainCredentials('guest', 'guest')
+            parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
                 credentials=credentials,
-                connection_attempts=5,
-                retry_delay=2
+                connection_attempts=10,
+                retry_delay=1
             )
-            self.connection = pika.BlockingConnection(parameters)
+            self.connection = BlockingConnection(parameters)
             self.channel = self.connection.channel()
             print(f"✓ Conectado a RabbitMQ en {self.host}:{self.port}")
-        except pika.exceptions.AMQPConnectionError as e:
+        except exceptions.AMQPConnectionError as e:
             print(f"✗ Error conectando a RabbitMQ: {e}")
             raise
     
@@ -95,8 +103,8 @@ class RabbitMQClient:
             exchange=exchange,
             routing_key=routing_key,
             body=message_json,
-            properties=pika.BasicProperties(
-                delivery_mode=pika.DeliveryMode.Persistent
+            properties=BasicProperties(
+                delivery_mode=DeliveryMode.Persistent
             )
         )
     
@@ -150,13 +158,18 @@ class RabbitMQClient:
         while response is None:
             if time.time() - start_time > timeout:
                 print(f"⏱ Timeout esperando respuesta con correlation_id: {correlation_id}")
+                self.channel.stop_consuming()
                 return None
             
             try:
                 self.channel.connection.process_data_events(time_limit=0.1)
             except Exception as e:
                 print(f"Error procesando eventos: {e}")
+                self.channel.stop_consuming()
                 return None
+        
+        # Detener consumidor temporal
+        self.channel.stop_consuming()
         
         return response
     
