@@ -17,3 +17,5 @@ id_cliente,nombre,correo,direccion,telefono,activo
 16,Carol Davis,carol@test.com,321 Elm St,4425559999,True
 17,Frank Johnson,frank@test.com,111 Oak Rd,4429999999,True
 18,Grace Martinez,grace@example.com,789 Elm Street,4425557777,True
+19,José Luis,josel@correo.com,MdeC #121,4429876543,True
+20,Marco Iván,marco@correo.com,MdeC #121,4429876543,True

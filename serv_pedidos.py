@@ -10,7 +10,7 @@ app = FastAPI(
     title="Coordinador de Pedidos",
     description="Servicio encargado de la coordinación y gestión de pedidos de venta, con validación de clientes e inventario. \n\n" \
     "Este servicio actúa como el punto central de integración entre los departamentos de Clientes, Productos e Inventario para garantizar la correcta ejecución de las ventas. \n\n" \
-    "Ejecutar en puerto **8002** y asegurarse de que los servicios de Clientes (8000), Productos (8001) e Inventario (8003) estén activos para su correcto funcionamiento. \n\n" \
+    "Ejecutar en puerto **8002** y asegurarse de que los servicios de Clientes (8010), Productos (8001) e Inventario (8003) estén activos para su correcto funcionamiento. \n\n" \
     "**Versión RabbitMQ**: Ahora se comunica a través de un bus de mensajería.",
     version="3.0.0 - RabbitMQ",
     contact={

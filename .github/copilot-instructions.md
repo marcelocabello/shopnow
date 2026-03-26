@@ -9,7 +9,7 @@ description: "ShopNow microservices project. Use when: setting up development en
 
 ShopNow is a microservices-based e-commerce system with four independent services communicating through RabbitMQ message bus:
 
-- **Clientes** (Port 8000): Customer management
+- **Clientes** (Port 8010): Customer management
 - **Productos** (Port 8001): Product catalog
 - **Pedidos** (Port 8002): Order processing
 - **Inventario** (Port 8003): Inventory management

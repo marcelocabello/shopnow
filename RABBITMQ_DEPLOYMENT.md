@@ -20,7 +20,7 @@ This guide explains how to run the ShopNow microservices with RabbitMQ messaging
     ▼       ▼  ▼       ▼
 ┌────────┐ ┌───────────┐ ┌────────────┐ ┌───────────┐
 │Pedidos │ │ Productos │ │  Clientes  │ │Inventario │
-│ :8002  │ │   :8001   │ │   :8000    │ │  :8003    │
+│ :8002  │ │   :8001   │ │   :8010    │ │  :8003    │
 └────────┘ └───────────┘ └────────────┘ └───────────┘
 ```
 
@@ -62,10 +62,10 @@ pip install fastapi uvicorn pika pydantic[email]
 
 Open separate terminals for each service:
 
-**Terminal 1 - Clientes (Port 8000)**
+**Terminal 1 - Clientes (Port 8010)**
 ```bash
 source .venv/bin/activate
-uvicorn serv_clientes:app --host 0.0.0.0 --port 8000 --reload
+uvicorn serv_clientes:app --host 0.0.0.0 --port 8010 --reload
 ```
 
 **Terminal 2 - Productos (Port 8001)**

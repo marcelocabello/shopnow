@@ -139,7 +139,7 @@ Before deployment, verify:
 bash shopnow.sh start
 
 # Check service health
-curl http://localhost:8000/docs  # Clientes
+curl http://localhost:8010/docs  # Clientes
 curl http://localhost:8001/docs  # Productos
 curl http://localhost:8002/docs  # Pedidos
 curl http://localhost:8003/docs  # Inventario

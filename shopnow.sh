@@ -28,7 +28,7 @@ mostrar_ayuda() {
     echo ""
     echo -e "${WHITE}Servicios:${NC}"
     echo -e "  ${MAGENTA}RabbitMQ${NC}:  puerto 5672 (amqp), 15672 (dashboard)"
-    echo -e "  ${MAGENTA}Clientes${NC}:   puerto 8000"
+    echo -e "  ${MAGENTA}Clientes${NC}:   puerto 8010"
     echo -e "  ${MAGENTA}Productos${NC}:  puerto 8001"
     echo -e "  ${MAGENTA}Pedidos${NC}:    puerto 8002"
     echo -e "  ${MAGENTA}Inventario${NC}: puerto 8003"
@@ -68,8 +68,8 @@ iniciar_servicios() {
     echo ""
     
     # Iniciar Clientes
-    echo -e "${YELLOW}▶ Iniciando Clientes (puerto 8000)${NC}"
-    uvicorn serv_clientes:app --port 8000 --reload > /dev/null 2>&1 &
+    echo -e "${YELLOW}▶ Iniciando Clientes (puerto 8010)${NC}"
+    uvicorn serv_clientes:app --port 8010 --reload > /dev/null 2>&1 &
     CLIENTE_PID=$!
     echo -e "  ${GREEN}✓ PID: $CLIENTE_PID${NC}"
     sleep 1
@@ -103,7 +103,7 @@ iniciar_servicios() {
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
     echo -e "${CYAN}📊 DOCUMENTACIÓN SWAGGER:${NC}"
-    echo -e "  • ${WHITE}Clientes${NC}:   ${CYAN}http://localhost:8000/docs${NC}"
+    echo -e "  • ${WHITE}Clientes${NC}:   ${CYAN}http://localhost:8010/docs${NC}"
     echo -e "  • ${WHITE}Productos${NC}:  ${CYAN}http://localhost:8001/docs${NC}"
     echo -e "  • ${WHITE}Pedidos${NC}:    ${CYAN}http://localhost:8002/docs${NC}"
     echo -e "  • ${WHITE}Inventario${NC}: ${CYAN}http://localhost:8003/docs${NC}"
@@ -128,9 +128,9 @@ detener_servicios() {
     # Detener Clientes
     pkill -f "uvicorn serv_clientes:app"
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ Clientes (puerto 8000)${NC} - ${RED}Detenido${NC}"
+        echo -e "${GREEN}✓ Clientes (puerto 8010)${NC} - ${RED}Detenido${NC}"
     else
-        echo -e "${YELLOW}○ Clientes (puerto 8000)${NC} - ${YELLOW}No estaba ejecutándose${NC}"
+        echo -e "${YELLOW}○ Clientes (puerto 8010)${NC} - ${YELLOW}No estaba ejecutándose${NC}"
     fi
     
     # Detener Productos
@@ -201,9 +201,9 @@ verificar_estado() {
     pgrep -f "uvicorn serv_clientes:app" > /dev/null
     if [ $? -eq 0 ]; then
         PID=$(pgrep -f "uvicorn serv_clientes:app")
-        echo -e "${GREEN}✓ Clientes (puerto 8000)${NC} - ${GREEN}EJECUTÁNDOSE${NC} ${CYAN}(PID: $PID)${NC}"
+        echo -e "${GREEN}✓ Clientes (puerto 8010)${NC} - ${GREEN}EJECUTÁNDOSE${NC} ${CYAN}(PID: $PID)${NC}"
     else
-        echo -e "${RED}✗ Clientes (puerto 8000)${NC} - ${RED}DETENIDO${NC}"
+        echo -e "${RED}✗ Clientes (puerto 8010)${NC} - ${RED}DETENIDO${NC}"
     fi
     
     # Verificar Productos

@@ -11,7 +11,7 @@ app = FastAPI(
     title="Departamento de Clientes",
     description="Servicio encargado de la custodia y registro oficial de los clientes de la empresa. \n\n" \
     "Este servicio actúa como el punto central de integración para la validación de clientes en los procesos de venta y atención al cliente. \n\n" \
-    "Ejecutar en puerto **8000** y asegurarse de que los servicios de Pedidos (8002) y Productos (8001) estén activos para su correcto funcionamiento. \n\n" \
+    "Ejecutar en puerto **8010** y asegurarse de que los servicios de Pedidos (8002) y Productos (8001) estén activos para su correcto funcionamiento. \n\n" \
     "**Versión RabbitMQ**: Ahora responde a solicitudes a través de un bus de mensajería.",
     version="3.0.0 - RabbitMQ",
     contact={
