@@ -1,3 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
 .docker-compose.yml.swp
-__pycache__/serv_clientes.cpython-312.pyc
-__pycache__/serv_productos.cpython-312.pyc
