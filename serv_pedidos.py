@@ -1,12 +1,38 @@
 import csv
 import os
+import json
+import pika
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
-import json
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
+    try:
+        print("▶ Conectando a RabbitMQ...")
+        mq_client.connect()
+        # Declarar el exchange
+        mq_client.declare_exchange('servicios', exchange_type='direct')
+        print("✓ Servicio de Pedidos iniciado y conectado a RabbitMQ")
+    except Exception as e:
+        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
+        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
+    
+    yield
+    
+    try:
+        mq_client.close()
+        print("✓ Servicio de Pedidos desconectado de RabbitMQ")
+    except Exception as e:
+        print(f"Error al desconectar de RabbitMQ: {e}")
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title="Coordinador de Pedidos",
     description="Servicio encargado de la coordinación y gestión de pedidos de venta, con validación de clientes e inventario. \n\n" \
     "Este servicio actúa como el punto central de integración entre los departamentos de Clientes, Productos e Inventario para garantizar la correcta ejecución de las ventas. \n\n" \
@@ -199,25 +225,4 @@ def crear_pedido(p: PedidoRegistro):
         raise HTTPException(status_code=503, detail="Error de comunicación con servicios (RabbitMQ)")
 
 
-@app.on_event("startup")
-def startup_event():
-    """Evento de inicio: conectar a RabbitMQ"""
-    try:
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        # Declarar el exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        print("✓ Servicio de Pedidos iniciado y conectado a RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-
-
-@app.on_event("shutdown")
-def shutdown_event():
-    """Evento de cierre: desconectar de RabbitMQ"""
-    try:
-        mq_client.close()
-        print("✓ Servicio de Pedidos desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")
+# Las funciones de startup y shutdown ahora están en el contexto lifespan

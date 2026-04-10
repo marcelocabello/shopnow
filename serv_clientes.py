@@ -2,12 +2,47 @@ import csv
 import os
 import json
 import pika
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
 
+
+@asynccontextmanager
+async def lifespan(app):
+    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
+    try:
+        import pika
+        print("▶ Conectando a RabbitMQ...")
+        mq_client.connect()
+        
+        # Declarar exchange
+        mq_client.declare_exchange('servicios', exchange_type='direct')
+        
+        # Declarar y vincular cola para solicitudes de validación
+        mq_client.declare_queue('clientes_requests')
+        mq_client.bind_queue('clientes_requests', 'servicios', ROUTING_KEYS['validate_cliente'])
+        
+        # Iniciar consumidor en thread separado
+        mq_client.start_consumer_thread('clientes_requests', handle_cliente_message)
+        
+        print("✓ Servicio de Clientes iniciado y escuchando en RabbitMQ")
+    except Exception as e:
+        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
+        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
+    
+    yield
+    
+    try:
+        mq_client.close()
+        print("✓ Servicio de Clientes desconectado de RabbitMQ")
+    except Exception as e:
+        print(f"Error al desconectar de RabbitMQ: {e}")
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Departamento de Clientes",
     description="Servicio encargado de la custodia y registro oficial de los clientes de la empresa. \n\n" \
     "Este servicio actúa como el punto central de integración para la validación de clientes en los procesos de venta y atención al cliente. \n\n" \
@@ -331,35 +366,5 @@ def handle_cliente_message(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag)
 
 
-@app.on_event("startup")
-def startup_event():
-    """Evento de inicio: conectar a RabbitMQ y iniciar consumidor"""
-    try:
-        import pika
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        
-        # Declarar exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        
-        # Declarar y vincular cola para solicitudes de validación
-        mq_client.declare_queue('clientes_requests')
-        mq_client.bind_queue('clientes_requests', 'servicios', ROUTING_KEYS['validate_cliente'])
-        
-        # Iniciar consumidor en thread separado
-        mq_client.start_consumer_thread('clientes_requests', handle_cliente_message)
-        
-        print("✓ Servicio de Clientes iniciado y escuchando en RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
+# Las funciones de startup y shutdown ahora están en el contexto lifespan
 
-
-@app.on_event("shutdown")
-def shutdown_event():
-    """Evento de cierre: desconectar de RabbitMQ"""
-    try:
-        mq_client.close()
-        print("✓ Servicio de Clientes desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")

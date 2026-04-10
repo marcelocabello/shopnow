@@ -264,4 +264,5 @@ ROUTING_KEYS = {
     'get_inventario': 'inventario.get',
     'descontar_inventario': 'inventario.descontar',
     'validate_cliente': 'clientes.validate',
+    'crear_pedido': 'pedidos.crear',
 }

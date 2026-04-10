@@ -167,16 +167,72 @@ The project includes CSV-based data storage:
 
 ### Message Queue Pattern
 
+**Request-Reply Pattern (Service-to-Service Communication)**
+
 Services communicating via RabbitMQ:
-- **serv_pedidos** sends requests and waits for responses on queues
-- Other services listen on their respective queues and respond
+- **serv_pedidos** sends requests and waits for responses through `request_reply()` method
+- Other services (clientes, productos, inventario) listen on their respective queues and respond
 - Uses direct exchange routing by service name
+
+**Queue-Based Order Processing (Resilient Message Handling)**
+
+The pedidos service now includes a consumer queue (`pedidos_requests`) that:
+- Listens for order creation messages published to the RabbitMQ queue
+- Automatically requeues messages (NACK with requeue=true) when dependent services are unavailable
+- Ensures no messages are lost if clientes, productos, or inventario services go down
+- Reprocesses messages automatically once dependent services recover
+
+**Key Behaviors:**
+- If a service timeout occurs during order validation, the message is **requeued** to be processed later
+- If validation fails due to invalid data, the message is **rejected permanently** (not requeued)
+- Successful orders are **acknowledged** and persisted to disk
+- This guarantees availability and message delivery assurance
 
 ### Adding New Endpoints
 
 1. Add route in appropriate service file
 2. Update message handlers if it requires inter-service communication
 3. Publish changes (services auto-reload with `--reload` flag)
+
+### Using Queue-Based Order Processing
+
+To submit orders asynchronously through the RabbitMQ queue (instead of REST endpoint):
+
+```python
+import json
+import pika
+from pika import PlainCredentials, ConnectionParameters, BasicProperties
+
+# Connect to RabbitMQ
+credentials = PlainCredentials('guest', 'guest')
+parameters = ConnectionParameters('localhost', 5672, credentials=credentials)
+connection = pika.BlockingConnection(parameters)
+channel = connection.channel()
+
+# Declare exchange (as seen in other services)
+channel.exchange_declare(exchange='servicios', exchange_type='direct', durable=True)
+
+# Publish order message
+order_data = {
+    'id_cliente': 101,
+    'id_producto': 1,
+    'cantidad': 2
+}
+
+channel.basic_publish(
+    exchange='servicios',
+    routing_key='pedidos.crear',
+    body=json.dumps(order_data),
+    properties=BasicProperties(
+        delivery_mode=pika.DeliveryMode.Persistent,
+        reply_to='my_reply_queue'  # Optional: to receive response
+    )
+)
+
+connection.close()
+```
+
+This approach ensures orders are preserved if services restart.
 
 ### Debugging
 

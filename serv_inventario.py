@@ -2,11 +2,47 @@ import csv
 import os
 import json
 import pika
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
 
+
+@asynccontextmanager
+async def lifespan(app):
+    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
+    try:
+        import pika
+        print("▶ Conectando a RabbitMQ...")
+        mq_client.connect()
+        
+        # Declarar exchange
+        mq_client.declare_exchange('servicios', exchange_type='direct')
+        
+        # Declarar y vincular cola para solicitudes de get y descontar
+        mq_client.declare_queue('inventario_requests')
+        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['get_inventario'])
+        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['descontar_inventario'])
+        
+        # Iniciar consumidor en thread separado
+        mq_client.start_consumer_thread('inventario_requests', handle_inventario_message)
+        
+        print("✓ Servicio de Inventario iniciado y escuchando en RabbitMQ")
+    except Exception as e:
+        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
+        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
+    
+    yield
+    
+    try:
+        mq_client.close()
+        print("✓ Servicio de Inventario desconectado de RabbitMQ")
+    except Exception as e:
+        print(f"Error al desconectar de RabbitMQ: {e}")
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Departamento de Inventario",
     description="Servicio encargado de la custodia y control de existencias físicas de productos.\n\n" \
     "Este servicio actúa como el punto central de integración para la validación de stock en los procesos de venta y gestión de pedidos. \n\n" \
@@ -379,37 +415,5 @@ def handle_inventario_message(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag)
 
 
-@app.on_event("startup")
-def startup_event():
-    """Evento de inicio: conectar a RabbitMQ y iniciar consumidor"""
-    try:
-        import pika
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        
-        # Declarar exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        
-        # Declarar y vincular cola para solicitudes de get y descontar
-        mq_client.declare_queue('inventario_requests')
-        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['get_inventario'])
-        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['descontar_inventario'])
-        
-        # Iniciar consumidor en thread separado
-        mq_client.start_consumer_thread('inventario_requests', handle_inventario_message)
-        
-        print("✓ Servicio de Inventario iniciado y escuchando en RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-        # No lanzamos la excepción para permitir que el servicio siga funcionando
+# Las funciones de startup y shutdown ahora están en el contexto lifespan
 
-
-@app.on_event("shutdown")
-def shutdown_event():
-    """Evento de cierre: desconectar de RabbitMQ"""
-    try:
-        mq_client.close()
-        print("✓ Servicio de Inventario desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")

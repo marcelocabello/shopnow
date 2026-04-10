@@ -45,27 +45,27 @@ iniciar_servicios() {
     echo ""
     
     # Verificar que existe docker-compose.yml
-    if [ ! -f "docker-compose.yml" ]; then
-        echo -e "${RED}✗ Error: docker-compose.yml no encontrado${NC}"
-        return 1
-    fi
+    #if [ ! -f "docker-compose.yml" ]; then
+    #    echo -e "${RED}✗ Error: docker-compose.yml no encontrado${NC}"
+    #    return 1
+    #fi
     
     # Iniciar RabbitMQ
-    echo -e "${YELLOW}▶ Iniciando RabbitMQ...${NC}"
-    docker compose up -d 2>/dev/null
+    #echo -e "${YELLOW}▶ Iniciando RabbitMQ...${NC}"
+    #docker compose up -d 2>/dev/null
     
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ RabbitMQ iniciado (puerto 5672, dashboard: http://localhost:15672)${NC}"
-        echo -e "  ${CYAN}Usuario: guest | Contraseña: guest${NC}"
-    else
-        echo -e "${RED}✗ Error al iniciar RabbitMQ${NC}"
-        return 1
-    fi
+    #if [ $? -eq 0 ]; then
+    #    echo -e "${GREEN}✓ RabbitMQ iniciado (puerto 5672, dashboard: http://localhost:15672)${NC}"
+    #    echo -e "  ${CYAN}Usuario: guest | Contraseña: guest${NC}"
+    #else
+    #    echo -e "${RED}✗ Error al iniciar RabbitMQ${NC}"
+    #    return 1
+    #fi
     
-    # Esperar a que RabbitMQ esté listo
-    echo -e "${YELLOW}▶ Esperando que RabbitMQ esté disponible (15 segundos para estabilizar)...${NC}"
-    sleep 15
-    echo ""
+    ## Esperar a que RabbitMQ esté listo
+    #echo -e "${YELLOW}▶ Esperando que RabbitMQ esté disponible (30 segundos para estabilizar, paciencia)...${NC}"
+    #sleep 30
+    #echo ""
     
     # Iniciar Clientes
     echo -e "${YELLOW}▶ Iniciando Clientes (puerto 8010)${NC}"
@@ -159,15 +159,15 @@ detener_servicios() {
     
     echo ""
     
-    # Detener RabbitMQ
-    echo -e "${YELLOW}▶ Deteniendo RabbitMQ...${NC}"
-    docker compose down 2>/dev/null
+    ## Detener RabbitMQ
+    #echo -e "${YELLOW}▶ Deteniendo RabbitMQ...${NC}"
+    #docker compose down 2>/dev/null
     
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ RabbitMQ${NC} - ${RED}Detenido${NC}"
-    else
-        echo -e "${YELLOW}○ RabbitMQ${NC} - ${YELLOW}No pudo detenerse${NC}"
-    fi
+    #if [ $? -eq 0 ]; then
+    #    echo -e "${GREEN}✓ RabbitMQ${NC} - ${RED}Detenido${NC}"
+    #else
+    #    echo -e "${YELLOW}○ RabbitMQ${NC} - ${YELLOW}No pudo detenerse${NC}"
+    #fi
     
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
