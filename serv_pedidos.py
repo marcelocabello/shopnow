@@ -3,10 +3,12 @@ import os
 import json
 import pika
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from typing import List
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
+from auth import verificar_token, endpoint_login, Token
 
 
 @asynccontextmanager
@@ -17,7 +19,12 @@ async def lifespan(app):
         mq_client.connect()
         # Declarar el exchange
         mq_client.declare_exchange('servicios', exchange_type='direct')
-        print("✓ Servicio de Pedidos iniciado y conectado a RabbitMQ")
+        # Declarar y vincular cola para pedidos asíncronos
+        mq_client.declare_queue('pedidos_requests')
+        mq_client.bind_queue('pedidos_requests', 'servicios', ROUTING_KEYS['crear_pedido'])
+        # Iniciar consumidor de pedidos encolados
+        mq_client.start_consumer_thread('pedidos_requests', handle_pedido_message)
+        print("✓ Servicio de Pedidos iniciado y conectado a RabbitMQ (consumer activo)")
     except Exception as e:
         print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
         print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
@@ -70,6 +77,130 @@ def leer_pedidos():
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
+
+# ============================================================================
+# CONSUMIDOR ASYNC DE PEDIDOS (maneja mensajes encolados vía RabbitMQ)
+# ============================================================================
+
+def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
+    """Lógica de negocio compartida entre endpoint síncrono y consumidor async.
+    
+    Returns: dict con id_pedido generado
+    Raises: HTTPException si falla validación de negocio (no reencolar)
+    Raises: RuntimeError si hay timeout de servicio (sí reencolar)
+    """
+    # Validar producto
+    resp = mq_client.request_reply(
+        exchange='servicios',
+        routing_key=ROUTING_KEYS['validate_producto'],
+        message={'id_producto': id_producto}
+    )
+    if resp is None:
+        raise RuntimeError("Timeout servicio productos")
+    if not resp.get('existe'):
+        raise HTTPException(status_code=400, detail="Producto no existe en el catálogo")
+
+    # Verificar inventario
+    resp = mq_client.request_reply(
+        exchange='servicios',
+        routing_key=ROUTING_KEYS['get_inventario'],
+        message={'id_producto': id_producto}
+    )
+    if resp is None:
+        raise RuntimeError("Timeout servicio inventario")
+    stock = resp.get('cantidad', 0)
+    if stock <= 0:
+        raise HTTPException(status_code=400, detail="Producto sin registro de inventario")
+    if cantidad > stock:
+        raise HTTPException(status_code=400, detail="Inventario insuficiente para completar el pedido")
+
+    # Validar cliente
+    resp = mq_client.request_reply(
+        exchange='servicios',
+        routing_key=ROUTING_KEYS['validate_cliente'],
+        message={'id_cliente': id_cliente}
+    )
+    if resp is None:
+        raise RuntimeError("Timeout servicio clientes")
+    if not resp.get('existe'):
+        raise HTTPException(status_code=400, detail="El cliente no existe en el padrón oficial")
+
+    # Descontar inventario
+    resp = mq_client.request_reply(
+        exchange='servicios',
+        routing_key=ROUTING_KEYS['descontar_inventario'],
+        message={'id_producto': id_producto, 'cantidad': cantidad}
+    )
+    if resp is None:
+        raise RuntimeError("Timeout al descontar inventario")
+    if not resp.get('exito'):
+        raise HTTPException(status_code=503, detail="Error al descontar inventario")
+
+    # Persistir pedido
+    pedidos = leer_pedidos()
+    siguiente_id = max((int(p['id_pedido']) for p in pedidos), default=500) + 1
+    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([siguiente_id, id_cliente, id_producto, cantidad])
+
+    return siguiente_id
+
+
+def handle_pedido_message(ch, method, properties, body):
+    """Consumidor RabbitMQ para pedidos encolados.
+    
+    - Si hay timeout (servicio caído): NACK + requeue=True (el mensaje regresa a la cola)
+    - Si falla validación de negocio: NACK + requeue=False (rechazo permanente)
+    - Si éxito: ACK y el pedido queda guardado
+    """
+    try:
+        message = json.loads(body)
+        print(f"📨 Procesando pedido encolado: {message}")
+        id_cliente = message['id_cliente']
+        id_producto = message['id_producto']
+        cantidad = message['cantidad']
+
+        id_pedido = _procesar_pedido_data(id_cliente, id_producto, cantidad)
+
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print(f"✓ Pedido {id_pedido} procesado y guardado desde cola")
+
+    except RuntimeError as e:
+        # Timeout - servicio caído, reencolar para reintento
+        print(f"⚠ Timeout al procesar pedido encolado ({e}). Reencolándolo...")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+    except HTTPException as e:
+        # Error de negocio - rechazar definitivamente
+        print(f"✗ Pedido inválido, rechazando (sin requeue): {e.detail}")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    except Exception as e:
+        print(f"✗ Error inesperado procesando pedido: {e}")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+
+def _publicar_pedido_encolado(p: PedidoRegistro):
+    """Publica un pedido en RabbitMQ para procesamiento asíncrono."""
+    mq_client.publish(
+        exchange='servicios',
+        routing_key=ROUTING_KEYS['crear_pedido'],
+        message={
+            "id_cliente": p.id_cliente,
+            "id_producto": p.id_producto,
+            "cantidad": p.cantidad,
+        },
+    )
+
+
+# ============================================================================
+# AUTENTICACIÓN
+# ============================================================================
+
+@app.post("/token", response_model=Token, tags=["Autenticación"], summary="Obtener token JWT")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Genera un JWT Bearer token. Usuarios: admin/admin123, usuario/pass123."""
+    return endpoint_login(form_data)
+
 @app.get(
     "/pedidos",
     response_model=List[Pedido],
@@ -94,7 +225,7 @@ def leer_pedidos():
         }
     }
 )
-def obtener_pedidos():
+def obtener_pedidos(usuario: str = Depends(verificar_token)):
     """Retorna el registro oficial de pedidos desde el archivo CSV.
     
     Este endpoint obtiene la lista completa de todos los pedidos registrados
@@ -108,121 +239,40 @@ def obtener_pedidos():
 @app.post(
     "/pedidos",
     tags=["Operaciones"],
-    summary="Crear nuevo pedido",
-    status_code=201,
+    summary="Crear nuevo pedido (asíncrono por defecto)",
+    status_code=202,
     responses={
-        201: {
-            "description": "Pedido creado exitosamente",
+        202: {
+            "description": "Pedido encolado exitosamente. Se procesará automáticamente cuando todos los servicios estén disponibles.",
             "content": {
                 "application/json": {
                     "example": {
-                        "mensaje": "Venta completada y stock descontado",
-                        "id_pedido": 501,
-                        "status": "success"
+                        "mensaje": "Pedido encolado exitosamente",
+                        "status": "queued"
                     }
                 }
             }
         },
-        400: {
-            "description": "Datos inválidos: cliente no existe, producto no existe, inventario insuficiente"
-        },
         503: {
-            "description": "Servicios de catálogo o inventario no disponibles"
+            "description": "No se pudo conectar a RabbitMQ"
         }
     }
 )
-def crear_pedido(p: PedidoRegistro):
-    """Crea un nuevo pedido con validación integrada a través de RabbitMQ.
-    
-    Ejecuta el siguiente flujo de validación usando mensajería:
-    1. Consulta el servicio de productos para verificar que el producto existe
-    2. Verifica que hay inventario suficiente para completar el pedido
-    3. Valida que el cliente existe en el padrón oficial
-    4. Si todo es válido: descuenta el inventario y persiste el pedido
-    
-    Args:
-        p (PedidoRegistro): Datos del pedido a crear.
-            - id_cliente: ID del cliente que realiza el pedido
-            - id_producto: ID del producto a ordenar
-            - cantidad: Cantidad de unidades a ordenar (debe ser mayor a 0)
-    
-    Returns:
-        dict: Diccionario con mensaje de éxito e ID asignado del pedido.
-    
-    Raises:
-        HTTPException: Con status 400 si hay problemas de validación.
-        HTTPException: Con status 503 si no hay disponibilidad de servicios.
+def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
+    """Encola un pedido para procesamiento asíncrono.
+
+    El consumidor de RabbitMQ aplica validaciones de negocio y, si hay timeout
+    por servicios caídos, re-encola automáticamente hasta poder procesarlo.
     """
     try:
-        # PASO 1a: Validar que el producto existe (a través de RabbitMQ)
-        response = mq_client.request_reply(
-            exchange='servicios',
-            routing_key=ROUTING_KEYS['validate_producto'],
-            message={'id_producto': p.id_producto}
-        )
-        
-        if response is None:
-            raise HTTPException(status_code=503, detail="Timeout esperando validación de producto")
-        if not response.get('existe'):
-            raise HTTPException(status_code=400, detail="Producto no existe en el catálogo")
-        
-        # PASO 1b: Consultar inventario disponible (a través de RabbitMQ)
-        response = mq_client.request_reply(
-            exchange='servicios',
-            routing_key=ROUTING_KEYS['get_inventario'],
-            message={'id_producto': p.id_producto}
-        )
-        
-        if response is None:
-            raise HTTPException(status_code=503, detail="Timeout esperando consulta de inventario")
-        if not response or response.get('cantidad') == 0:
-            raise HTTPException(status_code=400, detail="Producto sin registro de inventario")
-        
-        stock_actual = response.get('cantidad', 0)
-        if stock_actual <= 0 or p.cantidad > stock_actual:
-            raise HTTPException(status_code=400, detail="Inventario insuficiente para completar el pedido")
-        
-        # PASO 2: Validar que el cliente existe (a través de RabbitMQ)
-        response = mq_client.request_reply(
-            exchange='servicios',
-            routing_key=ROUTING_KEYS['validate_cliente'],
-            message={'id_cliente': p.id_cliente}
-        )
-        
-        if response is None:
-            raise HTTPException(status_code=503, detail="Timeout esperando validación de cliente")
-        if not response.get('existe'):
-            raise HTTPException(status_code=400, detail="El cliente no existe en el padrón oficial")
-        
-        # PASO 3: Descontar inventario (a través de RabbitMQ)
-        response = mq_client.request_reply(
-            exchange='servicios',
-            routing_key=ROUTING_KEYS['descontar_inventario'],
-            message={'id_producto': p.id_producto, 'cantidad': p.cantidad}
-        )
-        
-        if response is None:
-            raise HTTPException(status_code=503, detail="Timeout esperando descuento de inventario")
-        if not response.get('exito'):
-            raise HTTPException(status_code=503, detail="Error al descontar inventario")
-        
-        # PASO 4: Persistir pedido localmente
-        pedidos = leer_pedidos()
-        if pedidos and len(pedidos) > 0:
-            siguiente_id = max(int(ped['id_pedido']) for ped in pedidos) + 1
-        else:
-            siguiente_id = 1
-        
-        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([siguiente_id, p.id_cliente, p.id_producto, p.cantidad])
-        
-        return {"mensaje": "Venta completada y stock descontado", "id_pedido": siguiente_id, "status": "success"}
-
-    except HTTPException:
-        raise
+        _publicar_pedido_encolado(p)
+        return {
+            "mensaje": "Pedido encolado exitosamente",
+            "status": "queued",
+            "nota": "Se procesará cuando todos los servicios estén disponibles",
+        }
     except Exception as e:
-        print(f"Error en crear_pedido: {e}")
-        raise HTTPException(status_code=503, detail="Error de comunicación con servicios (RabbitMQ)")
+        raise HTTPException(status_code=503, detail=f"No se pudo encolar el pedido: {e}")
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan

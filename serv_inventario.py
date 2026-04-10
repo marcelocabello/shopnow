@@ -3,9 +3,11 @@ import os
 import json
 import pika
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
+from auth import verificar_token, endpoint_login, Token
 
 
 @asynccontextmanager
@@ -23,6 +25,9 @@ async def lifespan(app):
         mq_client.declare_queue('inventario_requests')
         mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['get_inventario'])
         mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['descontar_inventario'])
+        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.registrar')
+        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.agregar')
+        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.descontar')
         
         # Iniciar consumidor en thread separado
         mq_client.start_consumer_thread('inventario_requests', handle_inventario_message)
@@ -65,6 +70,10 @@ if not os.path.exists(FILE_NAME):
 # Cliente RabbitMQ global
 mq_client = RabbitMQClient(host='localhost', port=5672)
 
+RK_INVENTARIO_REGISTRAR = 'inventario.cmd.registrar'
+RK_INVENTARIO_AGREGAR = 'inventario.cmd.agregar'
+RK_INVENTARIO_DESCONTAR = 'inventario.cmd.descontar'
+
 # Contrato de Servicio (Formato Oficial)
 class MovimientoInventario(BaseModel):
     id_producto: int = Field(..., example=1) # type: ignore
@@ -73,6 +82,16 @@ class MovimientoInventario(BaseModel):
 def leer_inventario():
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _publicar_comando_inventario(routing_key: str, payload: dict):
+    mq_client.publish(exchange='servicios', routing_key=routing_key, message=payload)
+
+
+@app.post("/token", response_model=Token, tags=["Autenticación"], summary="Obtener token JWT")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Genera un JWT Bearer token. Usuarios: admin/admin123, usuario/pass123."""
+    return endpoint_login(form_data)
 
 @app.get(
     "/inventario",
@@ -99,7 +118,7 @@ def leer_inventario():
         }
     }
 )
-def obtener_inventario_completo():
+def obtener_inventario_completo(usuario: str = Depends(verificar_token)):
     """Retorna el inventario completo de todos los productos.
     
     Este endpoint obtiene la lista completa del stock disponible de todos
@@ -139,7 +158,7 @@ def obtener_inventario_completo():
         }
     }
 )
-def consultar_stock(id_producto: int):
+def consultar_stock(id_producto: int, usuario: str = Depends(verificar_token)):
     """Consulta la cantidad disponible de un producto específico.
     
     Busca y retorna el stock actual de un producto por su ID único.
@@ -163,7 +182,7 @@ def consultar_stock(id_producto: int):
     "/inventario",
     tags=["Operaciones"],
     summary="Registrar nuevo producto en inventario",
-    status_code=201,
+    status_code=202,
     responses={
         201: {
             "description": "Producto registrado en inventario exitosamente",
@@ -183,7 +202,7 @@ def consultar_stock(id_producto: int):
         }
     }
 )
-def registrar_inventario(mov: MovimientoInventario):
+def registrar_inventario(mov: MovimientoInventario, usuario: str = Depends(verificar_token)):
     """Registra un nuevo producto en el inventario.
     
     Crea un nuevo registro de inventario para un producto específico con
@@ -200,23 +219,17 @@ def registrar_inventario(mov: MovimientoInventario):
     Raises:
         HTTPException: Con status 400 si el producto ya existe en inventario.
     """
-    items = leer_inventario()
-    
-    # Verificar que el producto no exista ya
-    if any(int(item['id_producto']) == mov.id_producto for item in items):
-        raise HTTPException(status_code=400, detail="El producto ya existe en el inventario")
-    
-    # Registrar nuevo producto en inventario
-    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([mov.id_producto, mov.cantidad])
-    
-    return {"mensaje": "Producto registrado en inventario", "id_producto": mov.id_producto, "cantidad": mov.cantidad, "status": "success"}
+    _publicar_comando_inventario(
+        RK_INVENTARIO_REGISTRAR,
+        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
+    )
+    return {"mensaje": "Solicitud de registro encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 @app.post(
     "/inventario/descontar",
     tags=["Operaciones"],
     summary="Descontar stock de inventario",
-    status_code=200,
+    status_code=202,
     responses={
         200: {
             "description": "Stock descontado exitosamente",
@@ -237,7 +250,7 @@ def registrar_inventario(mov: MovimientoInventario):
         }
     }
 )
-def descontar_stock(mov: MovimientoInventario):
+def descontar_stock(mov: MovimientoInventario, usuario: str = Depends(verificar_token)):
     """Descuenta stock del inventario tras una venta exitosa.
     
     Reduce la cantidad disponible de un producto en el inventario.
@@ -255,32 +268,17 @@ def descontar_stock(mov: MovimientoInventario):
         HTTPException: Con status 400 si stock es insuficiente.
         HTTPException: Con status 404 si el producto no existe en inventario.
     """
-    items = leer_inventario()
-    encontrado = False
-    for item in items:
-        if int(item['id_producto']) == mov.id_producto:
-            nueva_cantidad = int(item['cantidad']) - mov.cantidad
-            if nueva_cantidad < 0:
-                raise HTTPException(status_code=400, detail="Stock insuficiente en almacén")
-            item['cantidad'] = str(nueva_cantidad)
-            encontrado = True
-            break
-    
-    if not encontrado:
-        raise HTTPException(status_code=404, detail="Producto no encontrado en inventario")
-        
-    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADERS)
-        writer.writeheader()
-        writer.writerows(items)
-        
-    return {"mensaje": "Descuento de inventario aplicado exitosamente", "status": "success"}
+    _publicar_comando_inventario(
+        RK_INVENTARIO_DESCONTAR,
+        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
+    )
+    return {"mensaje": "Solicitud de descuento encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 @app.post(
     "/inventario/agregar",
     tags=["Operaciones"],
     summary="Agregar stock al inventario",
-    status_code=200,
+    status_code=202,
     responses={
         200: {
             "description": "Stock agregado exitosamente",
@@ -300,7 +298,7 @@ def descontar_stock(mov: MovimientoInventario):
         }
     }
 )
-def agregar_stock(mov: MovimientoInventario):
+def agregar_stock(mov: MovimientoInventario, usuario: str = Depends(verificar_token)):
     """Agrega stock al inventario de un producto.
     
     Incrementa la cantidad disponible de un producto en el inventario.
@@ -317,24 +315,11 @@ def agregar_stock(mov: MovimientoInventario):
     Raises:
         HTTPException: Con status 404 si el producto no existe en inventario.
     """
-    items = leer_inventario()
-    encontrado = False
-    for item in items:
-        if int(item['id_producto']) == mov.id_producto:
-            nueva_cantidad = int(item['cantidad']) + mov.cantidad
-            item['cantidad'] = str(nueva_cantidad)
-            encontrado = True
-            break
-    
-    if not encontrado:
-        raise HTTPException(status_code=404, detail="Producto no encontrado en inventario")
-        
-    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADERS)
-        writer.writeheader()
-        writer.writerows(items)
-        
-    return {"mensaje": "Existencias agregadas exitosamente", "id_producto": mov.id_producto, "nueva_cantidad": nueva_cantidad, "status": "success"}
+    _publicar_comando_inventario(
+        RK_INVENTARIO_AGREGAR,
+        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
+    )
+    return {"mensaje": "Solicitud de agregado encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 
 # ============================================================================
@@ -346,22 +331,23 @@ def handle_inventario_message(ch, method, properties, body):
     Maneja mensajes de solicitud sobre inventario desde RabbitMQ.
     
     Operaciones soportadas:
-    - get_inventario: Obtiene el stock de un producto
-    - descontar_inventario: Descuenta stock tras una compra
+    - get_inventario: Obtiene el stock de un producto (request-reply)
+    - descontar_inventario: Descuenta stock tras una compra (request-reply)
+    - inventario.cmd.*: Comandos asíncronos de escritura
     """
     try:
         message = json.loads(body)
         print(f"📨 Mensaje recibido en Inventario: {message}")
         
         # Obtener la información de respuesta
-        reply_to = properties.reply_to
-        correlation_id = properties.correlation_id
+        reply_to = properties.reply_to if properties else None
+        correlation_id = properties.correlation_id if properties else None
         routing_key = method.routing_key
         
         response = None
         
         # Procesar según la routing key
-        if 'get' in routing_key:
+        if routing_key == ROUTING_KEYS['get_inventario']:
             # Consultar stock
             id_producto = message.get('id_producto')
             items = leer_inventario()
@@ -372,7 +358,7 @@ def handle_inventario_message(ch, method, properties, body):
             if not response:
                 response = {'id_producto': id_producto, 'cantidad': 0, 'error': 'Producto no en inventario'}
         
-        elif 'descontar' in routing_key:
+        elif routing_key == ROUTING_KEYS['descontar_inventario']:
             # Descontar inventario
             id_producto = message.get('id_producto')
             cantidad = message.get('cantidad')
@@ -396,23 +382,68 @@ def handle_inventario_message(ch, method, properties, body):
             
             if not exito and not response:
                 response = {'exito': False, 'error': 'Producto no encontrado', 'id_producto': id_producto}
+
+        elif routing_key == RK_INVENTARIO_REGISTRAR:
+            id_producto = int(message.get('id_producto'))
+            cantidad = int(message.get('cantidad'))
+            items = leer_inventario()
+            if not any(int(item['id_producto']) == id_producto for item in items):
+                with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                    csv.writer(f).writerow([id_producto, cantidad])
+
+        elif routing_key == RK_INVENTARIO_DESCONTAR:
+            id_producto = int(message.get('id_producto'))
+            cantidad = int(message.get('cantidad'))
+            items = leer_inventario()
+            actualizado = False
+            for item in items:
+                if int(item['id_producto']) == id_producto:
+                    nueva_cantidad = int(item['cantidad']) - cantidad
+                    if nueva_cantidad >= 0:
+                        item['cantidad'] = str(nueva_cantidad)
+                        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                            writer = csv.DictWriter(f, fieldnames=HEADERS)
+                            writer.writeheader()
+                            writer.writerows(items)
+                    actualizado = True
+                    break
+            if not actualizado:
+                raise ValueError(f"Producto {id_producto} no encontrado en inventario")
+
+        elif routing_key == RK_INVENTARIO_AGREGAR:
+            id_producto = int(message.get('id_producto'))
+            cantidad = int(message.get('cantidad'))
+            items = leer_inventario()
+            actualizado = False
+            for item in items:
+                if int(item['id_producto']) == id_producto:
+                    item['cantidad'] = str(int(item['cantidad']) + cantidad)
+                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=HEADERS)
+                        writer.writeheader()
+                        writer.writerows(items)
+                    actualizado = True
+                    break
+            if not actualizado:
+                raise ValueError(f"Producto {id_producto} no encontrado en inventario")
         
-        # Enviar respuesta
-        mq_client.channel.basic_publish(
-            exchange='',
-            routing_key=reply_to,
-            body=json.dumps(response or {'error': 'Operación desconocida'}),
-            properties=pika.BasicProperties(
-                correlation_id=correlation_id
+        # Enviar respuesta solo para operaciones request-reply
+        if reply_to and correlation_id and response is not None:
+            mq_client.channel.basic_publish(
+                exchange='',
+                routing_key=reply_to,
+                body=json.dumps(response),
+                properties=pika.BasicProperties(
+                    correlation_id=correlation_id
+                )
             )
-        )
         
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(f"✓ Respuesta enviada: {response}")
+        print(f"✓ Operación de inventario procesada para routing_key={routing_key}")
         
     except Exception as e:
         print(f"Error procesando mensaje de inventario: {e}")
-        ch.basic_nack(delivery_tag=method.delivery_tag)
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan
