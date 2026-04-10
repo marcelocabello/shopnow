@@ -101,15 +101,31 @@ class RabbitMQClient:
             routing_key: Clave de enrutamiento
             message: Diccionario con el mensaje
         """
-        message_json = json.dumps(message)
-        self.channel.basic_publish(
-            exchange=exchange,
-            routing_key=routing_key,
-            body=message_json,
-            properties=BasicProperties(
-                delivery_mode=DeliveryMode.Persistent
+        publish_connection = None
+        try:
+            credentials = PlainCredentials('guest', 'guest')
+            parameters = ConnectionParameters(
+                host=self.host,
+                port=self.port,
+                credentials=credentials,
+                connection_attempts=3,
+                retry_delay=0.5,
+                heartbeat=0,
+                blocked_connection_timeout=300
             )
-        )
+            publish_connection = BlockingConnection(parameters)
+            publish_channel = publish_connection.channel()
+            publish_channel.basic_publish(
+                exchange=exchange,
+                routing_key=routing_key,
+                body=json.dumps(message),
+                properties=BasicProperties(
+                    delivery_mode=DeliveryMode.Persistent
+                )
+            )
+        finally:
+            if publish_connection and not publish_connection.is_closed:
+                publish_connection.close()
     
     def request_reply(self, exchange: str, routing_key: str, message: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
         """

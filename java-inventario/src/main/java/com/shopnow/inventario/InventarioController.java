@@ -16,18 +16,27 @@ public class InventarioController {
 
     private static final String FILE_NAME = "inventario.csv";
     private static final String[] HEADERS = {"id_producto", "cantidad"};
+    private final AuthService authService;
 
-    public InventarioController() throws IOException {
+    public InventarioController(AuthService authService) throws IOException {
+        this.authService = authService;
         inicializarArchivo();
     }
 
     @GetMapping("/inventario")
-    public List<Map<String, Object>> obtenerInventarioCompleto() throws IOException {
+    public List<Map<String, Object>> obtenerInventarioCompleto(
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws IOException {
+        authService.validateAuthorizationHeader(authorization);
         return leerInventario();
     }
 
     @GetMapping("/inventario/{id_producto}")
-    public ResponseEntity<?> consultarStock(@PathVariable int id_producto) throws IOException {
+    public ResponseEntity<?> consultarStock(
+            @PathVariable int id_producto,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws IOException {
+        authService.validateAuthorizationHeader(authorization);
         List<Map<String, Object>> items = leerInventario();
         for (Map<String, Object> item : items) {
             if (((Integer) item.get("id_producto")) == id_producto) {
@@ -39,7 +48,11 @@ public class InventarioController {
     }
 
     @PostMapping("/inventario")
-    public ResponseEntity<?> registrarInventario(@RequestBody MovimientoInventario mov) throws IOException {
+    public ResponseEntity<?> registrarInventario(
+            @RequestBody MovimientoInventario mov,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws IOException {
+        authService.validateAuthorizationHeader(authorization);
         if (mov.getCantidad() <= 0) {
             return ResponseEntity.badRequest().body(Map.of("detail", "cantidad debe ser mayor a 0"));
         }
@@ -63,7 +76,11 @@ public class InventarioController {
     }
 
     @PostMapping("/inventario/descontar")
-    public ResponseEntity<?> descontarStock(@RequestBody MovimientoInventario mov) throws IOException {
+    public ResponseEntity<?> descontarStock(
+            @RequestBody MovimientoInventario mov,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws IOException {
+        authService.validateAuthorizationHeader(authorization);
         if (mov.getCantidad() <= 0) {
             return ResponseEntity.badRequest().body(Map.of("detail", "cantidad debe ser mayor a 0"));
         }
@@ -95,7 +112,11 @@ public class InventarioController {
     }
 
     @PostMapping("/inventario/agregar")
-    public ResponseEntity<?> agregarStock(@RequestBody MovimientoInventario mov) throws IOException {
+    public ResponseEntity<?> agregarStock(
+            @RequestBody MovimientoInventario mov,
+            @RequestHeader(value = "Authorization", required = false) String authorization
+    ) throws IOException {
+        authService.validateAuthorizationHeader(authorization);
         if (mov.getCantidad() <= 0) {
             return ResponseEntity.badRequest().body(Map.of("detail", "cantidad debe ser mayor a 0"));
         }

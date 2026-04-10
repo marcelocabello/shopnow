@@ -3,10 +3,12 @@ import os
 import json
 import pika
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
+from auth import verificar_token, endpoint_login, Token
 
 
 @asynccontextmanager
@@ -23,6 +25,9 @@ async def lifespan(app):
         # Declarar y vincular cola para solicitudes de validación
         mq_client.declare_queue('clientes_requests')
         mq_client.bind_queue('clientes_requests', 'servicios', ROUTING_KEYS['validate_cliente'])
+        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.crear')
+        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.actualizar')
+        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.inactivar')
         
         # Iniciar consumidor en thread separado
         mq_client.start_consumer_thread('clientes_requests', handle_cliente_message)
@@ -57,7 +62,7 @@ app = FastAPI(
 # /home/boomer/ITQ/SOA/ShopNow_PHP/shopnow/var/db_clientes.csv
 # /home/boomer/ITQ/SOA/ShopNow/clientes.csv
 FILE_NAME = "clientes.csv"
-HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono", "activo"]
+HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono", "activo", "rfc", "fecha_registro"]
 
 # Inicializar archivo si no existe
 if not os.path.exists(FILE_NAME):
@@ -66,6 +71,10 @@ if not os.path.exists(FILE_NAME):
 
 # Cliente RabbitMQ global
 mq_client = RabbitMQClient(host='localhost', port=5672)
+
+RK_CLIENTE_CREAR = 'clientes.cmd.crear'
+RK_CLIENTE_ACTUALIZAR = 'clientes.cmd.actualizar'
+RK_CLIENTE_INACTIVAR = 'clientes.cmd.inactivar'
 
 class Cliente(BaseModel):
     id_cliente: int = Field(..., example=101, description="ID numérico único") # type: ignore
@@ -89,9 +98,102 @@ class ClienteUpdate(BaseModel):
     telefono: Optional[str] = Field(None, min_length=10, max_length=10, example="4421234567") # type: ignore
     activo: Optional[bool] = Field(None, example=True) # type: ignore
 
+class ClienteV2(BaseModel):
+    id_cliente: int
+    nombre: str
+    correo: str
+    direccion: str
+    telefono: str
+    activo: bool
+    rfc: str = ""
+    fecha_registro: str = ""
+
+class ClienteRegistroV2(BaseModel):
+    nombre: str = Field(..., min_length=3, example="Juan Pérez") # type: ignore
+    correo: str = Field(..., example="juan@ejemplo.com") # type: ignore
+    direccion: str = Field(..., example="Calle 123") # type: ignore
+    telefono: str = Field(..., min_length=10, max_length=10, example="4421234567") # type: ignore
+    activo: bool = Field(default=True, example=True) # type: ignore
+    rfc: str = Field(default="", example="XAXX010101000") # type: ignore
+    fecha_registro: str = Field(default="", example="2026-04-10") # type: ignore
+
 def leer_clientes():
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def _publicar_comando_cliente(routing_key: str, payload: dict):
+    mq_client.publish(exchange='servicios', routing_key=routing_key, message=payload)
+
+# ============================================================================
+# AUTENTICACIÓN
+# ============================================================================
+
+@app.post("/token", response_model=Token, tags=["Autenticación"], summary="Obtener token JWT")
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    """Genera un JWT Bearer token. Usuarios: admin/admin123, usuario/pass123."""
+    return endpoint_login(form_data)
+
+
+# ============================================================================
+# ENDPOINTS VERSIONADOS
+# ============================================================================
+
+@app.get("/v1/clientes", tags=["Versionado"], summary="Clientes v1 — 6 campos")
+def get_clientes_v1(usuario: str = Depends(verificar_token)):
+    """Lista clientes con 6 campos: id_cliente, nombre, correo, direccion, telefono, activo."""
+    clientes = leer_clientes()
+    return [
+        {
+            "id_cliente": int(c["id_cliente"]),
+            "nombre": c["nombre"],
+            "correo": c["correo"],
+            "direccion": c["direccion"],
+            "telefono": c["telefono"],
+            "activo": str(c.get("activo", "True")).lower() in ("true", "1"),
+        }
+        for c in clientes
+    ]
+
+@app.get("/v2/clientes", tags=["Versionado"], summary="Clientes v2 — 8 campos (incluye rfc y fecha_registro)")
+def get_clientes_v2(usuario: str = Depends(verificar_token)):
+    """Lista clientes con 8 campos: todos los de v1 más rfc y fecha_registro."""
+    clientes = leer_clientes()
+    return [
+        {
+            "id_cliente": int(c["id_cliente"]),
+            "nombre": c["nombre"],
+            "correo": c["correo"],
+            "direccion": c["direccion"],
+            "telefono": c["telefono"],
+            "activo": str(c.get("activo", "True")).lower() in ("true", "1"),
+            "rfc": c.get("rfc", ""),
+            "fecha_registro": c.get("fecha_registro", ""),
+        }
+        for c in clientes
+    ]
+
+@app.post("/v2/clientes", tags=["Versionado"], summary="Registrar cliente v2 — acepta rfc y fecha_registro", status_code=202)
+def registrar_cliente_v2(nuevo: ClienteRegistroV2, usuario: str = Depends(verificar_token)):
+    """Encola el alta de cliente v2 para procesamiento asíncrono."""
+    _publicar_comando_cliente(
+        RK_CLIENTE_CREAR,
+        {
+            "nombre": nuevo.nombre,
+            "correo": nuevo.correo,
+            "direccion": nuevo.direccion,
+            "telefono": nuevo.telefono,
+            "activo": nuevo.activo,
+            "rfc": nuevo.rfc,
+            "fecha_registro": nuevo.fecha_registro,
+        },
+    )
+    return {
+        "mensaje": "Cliente v2 encolado exitosamente",
+        "status": "queued",
+        "nota": "Se procesará automáticamente por RabbitMQ",
+    }
+
 
 @app.get(
     "/clientes",
@@ -119,7 +221,7 @@ def leer_clientes():
         }
     }
 )
-def obtener_clientes():
+def obtener_clientes(usuario: str = Depends(verificar_token)):
     """Retorna el padrón oficial de clientes desde el archivo CSV.
     
     Este endpoint obtiene la lista completa de todos los clientes registrados
@@ -134,7 +236,7 @@ def obtener_clientes():
     "/clientes",
     tags=["Operaciones"],
     summary="Registrar nuevo cliente",
-    status_code=201,
+    status_code=202,
     responses={
         201: {
             "description": "Cliente registrado exitosamente",
@@ -152,7 +254,7 @@ def obtener_clientes():
         }
     }
 )
-def registrar_cliente(nuevo: ClienteRegistro):
+def registrar_cliente(nuevo: ClienteRegistro, usuario: str = Depends(verificar_token)):
     """Registra un nuevo cliente en la base de datos.
     
     Crea un nuevo cliente con el siguiente flujo:
@@ -170,23 +272,25 @@ def registrar_cliente(nuevo: ClienteRegistro):
     Returns:
         dict: Diccionario con mensaje de éxito e ID asignado del cliente.
     """
-    clientes = leer_clientes()
-    
-    # Generar ID autoincremental
-    if clientes:
-        siguiente_id = max(int(c['id_cliente']) for c in clientes) + 1
-    else:
-        siguiente_id = 1
-    
-    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([siguiente_id, nuevo.nombre, nuevo.correo, nuevo.direccion, nuevo.telefono, nuevo.activo])
-    return {"mensaje": "Cliente registrado en el archivo CSV", "id_cliente": siguiente_id, "status": "success"}
+    _publicar_comando_cliente(
+        RK_CLIENTE_CREAR,
+        {
+            "nombre": nuevo.nombre,
+            "correo": nuevo.correo,
+            "direccion": nuevo.direccion,
+            "telefono": nuevo.telefono,
+            "activo": nuevo.activo,
+            "rfc": "",
+            "fecha_registro": "",
+        },
+    )
+    return {"mensaje": "Cliente encolado exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 @app.delete(
     "/clientes/{id_cliente}",
     tags=["Operaciones"],
     summary="Eliminar cliente",
-    status_code=200,
+    status_code=202,
     responses={
         200: {
             "description": "Cliente eliminado exitosamente",
@@ -211,7 +315,7 @@ def registrar_cliente(nuevo: ClienteRegistro):
         }
     }
 )
-def eliminar_cliente(id_cliente: int):
+def eliminar_cliente(id_cliente: int, usuario: str = Depends(verificar_token)):
     """Elimina un cliente existente de la base de datos.
     
     Busca y elimina un cliente por su ID único, liberando su registro
@@ -226,27 +330,14 @@ def eliminar_cliente(id_cliente: int):
     Raises:
         HTTPException: Con status 404 si el cliente no existe.
     """
-    clientes = leer_clientes()
-    cliente = next((c for c in clientes if int(c['id_cliente']) == id_cliente), None)
-    if not cliente:
-        raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    
-    # clientes.remove(cliente)
-    cliente['activo'] = "False"  # Marcar como inactivo en lugar de eliminar físicamente
-    
-    # Reescribir el archivo CSV sin el cliente eliminado
-    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADERS)
-        writer.writeheader()
-        writer.writerows(clientes)
-    
-    return {"mensaje": "Cliente eliminado (inactivado) exitosamente", "status": "success"}
+    _publicar_comando_cliente(RK_CLIENTE_INACTIVAR, {"id_cliente": id_cliente})
+    return {"mensaje": "Solicitud de baja encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 @app.patch(
     "/clientes/{id_cliente}",
     tags=["Operaciones"],
     summary="Actualizar cliente parcialmente",
-    status_code=200,
+    status_code=202,
     responses={
         200: {
             "description": "Cliente actualizado parcialmente de forma exitosa",
@@ -274,7 +365,7 @@ def eliminar_cliente(id_cliente: int):
         }
     }
 )
-def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate):
+def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate, usuario: str = Depends(verificar_token)):
     """Actualiza parcialmente un cliente existente.
     
     Permite actualizar uno o más campos de un cliente sin necesidad
@@ -296,30 +387,18 @@ def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate):
     Raises:
         HTTPException: Con status 404 si el cliente no existe.
     """
-    clientes = leer_clientes()
-    cliente = next((c for c in clientes if int(c['id_cliente']) == id_cliente), None)
-    if not cliente:
-        raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    
-    # Actualizar campos proporcionados
-    if update.nombre is not None:
-        cliente['nombre'] = update.nombre
-    if update.correo is not None:
-        cliente['correo'] = update.correo
-    if update.direccion is not None:
-        cliente['direccion'] = update.direccion
-    if update.telefono is not None:
-        cliente['telefono'] = update.telefono
-    if update.activo is not None:
-        cliente['activo'] = update.activo
-    
-    # Reescribir el archivo CSV con los cambios
-    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=HEADERS)
-        writer.writeheader()
-        writer.writerows(clientes)
-    
-    return {"mensaje": "Cliente actualizado parcialmente exitosamente", "status": "success"}
+    _publicar_comando_cliente(
+        RK_CLIENTE_ACTUALIZAR,
+        {
+            "id_cliente": id_cliente,
+            "nombre": update.nombre,
+            "correo": update.correo,
+            "direccion": update.direccion,
+            "telefono": update.telefono,
+            "activo": update.activo,
+        },
+    )
+    return {"mensaje": "Solicitud de actualización encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
 
 
 # ============================================================================
@@ -331,39 +410,73 @@ def handle_cliente_message(ch, method, properties, body):
     Maneja mensajes de solicitud sobre clientes desde RabbitMQ.
     
     Operaciones soportadas:
-    - validate_cliente: Verifica si un cliente existe
+    - validate_cliente: Verifica si un cliente existe (request-reply)
+    - clientes.cmd.*: Comandos asíncronos de escritura
     """
     try:
         message = json.loads(body)
         print(f"📨 Mensaje recibido en Clientes: {message}")
         
-        # Obtener la información de respuesta
-        reply_to = properties.reply_to
-        correlation_id = properties.correlation_id
-        
-        # Procesar la solicitud
-        id_cliente = message.get('id_cliente')
-        clientes = leer_clientes()
-        existe = any(int(c['id_cliente']) == id_cliente for c in clientes)
-        
-        response = {'existe': existe, 'id_cliente': id_cliente}
-        
-        # Enviar respuesta
-        mq_client.channel.basic_publish(
-            exchange='',
-            routing_key=reply_to,
-            body=json.dumps(response),
-            properties=pika.BasicProperties(
-                correlation_id=correlation_id
+        routing_key = method.routing_key
+
+        if routing_key == ROUTING_KEYS['validate_cliente']:
+            reply_to = properties.reply_to
+            correlation_id = properties.correlation_id
+            id_cliente = message.get('id_cliente')
+            clientes = leer_clientes()
+            existe = any(int(c['id_cliente']) == id_cliente for c in clientes)
+            response = {'existe': existe, 'id_cliente': id_cliente}
+            mq_client.channel.basic_publish(
+                exchange='',
+                routing_key=reply_to,
+                body=json.dumps(response),
+                properties=pika.BasicProperties(
+                    correlation_id=correlation_id
+                )
             )
-        )
+        elif routing_key == RK_CLIENTE_CREAR:
+            clientes = leer_clientes()
+            siguiente_id = max((int(c['id_cliente']) for c in clientes), default=100) + 1
+            with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([
+                    siguiente_id,
+                    message.get('nombre', ''),
+                    message.get('correo', ''),
+                    message.get('direccion', ''),
+                    message.get('telefono', ''),
+                    message.get('activo', True),
+                    message.get('rfc', ''),
+                    message.get('fecha_registro', ''),
+                ])
+        elif routing_key == RK_CLIENTE_ACTUALIZAR:
+            id_cliente = message.get('id_cliente')
+            clientes = leer_clientes()
+            cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
+            if cliente:
+                for campo in ['nombre', 'correo', 'direccion', 'telefono', 'activo']:
+                    if message.get(campo) is not None:
+                        cliente[campo] = message.get(campo)
+                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=HEADERS)
+                    writer.writeheader()
+                    writer.writerows(clientes)
+        elif routing_key == RK_CLIENTE_INACTIVAR:
+            id_cliente = message.get('id_cliente')
+            clientes = leer_clientes()
+            cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
+            if cliente:
+                cliente['activo'] = "False"
+                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=HEADERS)
+                    writer.writeheader()
+                    writer.writerows(clientes)
         
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        print(f"✓ Respuesta enviada: {response}")
+        print(f"✓ Operación de clientes procesada para routing_key={routing_key}")
         
     except Exception as e:
         print(f"Error procesando mensaje de clientes: {e}")
-        ch.basic_nack(delivery_tag=method.delivery_tag)
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan
