@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 .docker-compose.yml.swp
+
+# Archivos locales y temporales
+.codex
+.ngrok-logs/
+.ngrok-shopnow.log
+.ngrok-shopnow.pid
+.ngrok-shopnow.yml
+ngrok.txt
