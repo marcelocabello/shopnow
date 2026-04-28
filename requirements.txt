@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pika
+python-jose
+pydantic
+email-validator
+python-multipart
+
+
+el profe usa render

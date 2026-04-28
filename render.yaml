@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: shopnow-clientes
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn serv_clientes:app --host 0.0.0.0 --port $PORT
+
+  - type: web
+    name: shopnow-productos
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn serv_productos:app --host 0.0.0.0 --port $PORT
+
+  - type: web
+    name: shopnow-pedidos
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn serv_pedidos:app --host 0.0.0.0 --port $PORT
+
+  - type: web
+    name: shopnow-inventario
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn serv_inventario:app --host 0.0.0.0 --port $PORT
+
+  - type: web
+    name: shopnow-gateway
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn gateway:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CLIENTES_URL
+        value: https://shopnow-clientes.onrender.com
+      - key: PRODUCTOS_URL
+        value: https://shopnow-productos.onrender.com
+      - key: PEDIDOS_URL
+        value: https://shopnow-pedidos.onrender.com
+      - key: INVENTARIO_URL
+        value: https://shopnow-inventario.onrender.com

@@ -19,6 +19,66 @@ SERVICE_CLIENTES_CMD="uvicorn serv_clientes:app --port 8010 --reload"
 SERVICE_PRODUCTOS_CMD="uvicorn serv_productos:app --port 8001 --reload"
 SERVICE_PEDIDOS_CMD="uvicorn serv_pedidos:app --port 8002 --reload"
 SERVICE_INVENTARIO_CMD="uvicorn serv_inventario:app --port 8003 --reload"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="$SCRIPT_DIR/.venv2"
+VENV_ACTIVATE="$VENV_DIR/bin/activate"
+VENV_PYTHON="$VENV_DIR/bin/python"
+VENV_PIP="$VENV_DIR/bin/pip"
+
+bootstrap_entorno_python() {
+    echo -e "${YELLOW}▶ Verificando entorno Python...${NC}"
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "  ${RED}✗ No se encontró python3 en el sistema${NC}"
+        return 1
+    fi
+
+    if [ ! -f "$VENV_ACTIVATE" ]; then
+        echo -e "  ${YELLOW}○ No existe .venv2. Creándolo...${NC}"
+        python3 -m venv "$VENV_DIR" || return 1
+    else
+        echo -e "  ${GREEN}✓ Entorno virtual encontrado${NC}"
+    fi
+
+    # Activamos el entorno y validamos dependencias mínimas del proyecto.
+    source "$VENV_ACTIVATE"
+    if "$VENV_PYTHON" -c "import fastapi, uvicorn, pika, jose, pydantic, multipart, email_validator" >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ Dependencias Python disponibles${NC}"
+        return 0
+    fi
+
+    echo -e "  ${YELLOW}○ Instalando dependencias de Python...${NC}"
+    "$VENV_PIP" install -r "$SCRIPT_DIR/requirements.txt" || return 1
+    echo -e "  ${GREEN}✓ Dependencias instaladas${NC}"
+}
+
+bootstrap_rabbitmq() {
+    echo -e "${YELLOW}▶ Verificando RabbitMQ...${NC}"
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "  ${RED}✗ No se encontró docker en el sistema${NC}"
+        return 1
+    fi
+
+    if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "shopnow-rabbitmq"; then
+        echo -e "  ${YELLOW}○ No existe el contenedor shopnow-rabbitmq. Creándolo...${NC}"
+        docker run -d --name shopnow-rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management > /dev/null 2>&1 || {
+            echo -e "  ${RED}✗ No se pudo crear el contenedor RabbitMQ${NC}"
+            return 1
+        }
+        echo -e "  ${GREEN}✓ Contenedor RabbitMQ creado${NC}"
+        return 0
+    fi
+
+    docker start shopnow-rabbitmq > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo -e "  ${GREEN}✓ RabbitMQ iniciado (puerto 5672, dashboard: http://localhost:15672)${NC}"
+        echo -e "  ${CYAN}Usuario: guest | Contraseña: guest${NC}"
+    else
+        echo -e "  ${RED}✗ No se pudo iniciar RabbitMQ${NC}"
+        return 1
+    fi
+}
 
 start_service() {
     local service_name="$1"
@@ -157,21 +217,16 @@ iniciar_servicios() {
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
-    # Activar entorno virtual
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    source "$SCRIPT_DIR/.venv2/bin/activate"
-
-    # Iniciar RabbitMQ (usa docker start sobre el contenedor existente)
-    echo -e "${YELLOW}▶ Iniciando RabbitMQ...${NC}"
-    docker start shopnow-rabbitmq > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        echo -e "  ${GREEN}✓ RabbitMQ iniciado (puerto 5672, dashboard: http://localhost:15672)${NC}"
-        echo -e "  ${CYAN}Usuario: guest | Contraseña: guest${NC}"
-    else
-        echo -e "  ${RED}✗ Error al iniciar RabbitMQ. ¿Existe el contenedor shopnow-rabbitmq?${NC}"
-        echo -e "  ${YELLOW}  Crea el contenedor con: docker run -d --name shopnow-rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management${NC}"
+    if ! bootstrap_entorno_python; then
+        echo -e "  ${RED}✗ No fue posible preparar el entorno Python${NC}"
         return 1
     fi
+
+    if ! bootstrap_rabbitmq; then
+        echo -e "  ${RED}✗ No fue posible preparar RabbitMQ${NC}"
+        return 1
+    fi
+
     echo -e "${YELLOW}▶ Esperando que RabbitMQ esté disponible...${NC}"
     sleep 8
     echo ""

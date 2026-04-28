@@ -1,4 +1,5 @@
 import pika
+import os
 from pika import (
     exceptions,
     PlainCredentials,
@@ -12,6 +13,13 @@ import uuid
 from typing import Callable, Dict, Any, Optional
 import threading
 import time
+
+
+def create_rabbitmq_client(default_host: str = 'localhost', default_port: int = 5672):
+    """Crea un cliente RabbitMQ configurable por variables de entorno."""
+    host = os.getenv("RABBITMQ_HOST", default_host)
+    port = int(os.getenv("RABBITMQ_PORT", str(default_port)))
+    return RabbitMQClient(host=host, port=port)
 
 class RabbitMQClient:
     """Client para comunicación entre servicios a través de RabbitMQ."""

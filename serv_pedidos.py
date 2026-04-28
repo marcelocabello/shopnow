@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from typing import List
-from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
+from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 
 
@@ -59,7 +59,7 @@ if not os.path.exists(FILE_NAME):
         csv.writer(f).writerow(HEADERS)
 
 # Cliente RabbitMQ global
-mq_client = RabbitMQClient(host='localhost', port=5672)
+mq_client = create_rabbitmq_client()
 
 class Pedido(BaseModel):
     id_pedido: int = Field(..., example=501)  # type: ignore

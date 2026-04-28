@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from rabbitmq_client import RabbitMQClient, ROUTING_KEYS
+from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 
 
@@ -68,7 +68,7 @@ if not os.path.exists(FILE_NAME):
         csv.writer(f).writerow(HEADERS)
 
 # Cliente RabbitMQ global
-mq_client = RabbitMQClient(host='localhost', port=5672)
+mq_client = create_rabbitmq_client()
 
 RK_INVENTARIO_REGISTRAR = 'inventario.cmd.registrar'
 RK_INVENTARIO_AGREGAR = 'inventario.cmd.agregar'
@@ -447,4 +447,3 @@ def handle_inventario_message(ch, method, properties, body):
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan
-
