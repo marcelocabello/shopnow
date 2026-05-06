@@ -9,12 +9,16 @@ from pydantic import BaseModel, Field
 from typing import List
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
+import storage
 
 
 @asynccontextmanager
 async def lifespan(app):
     """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
     try:
+        if storage.postgres_enabled():
+            storage.ensure_schema()
+            print("✓ Postgres habilitado para servicio de Pedidos")
         print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
         # Declarar el exchange
@@ -54,7 +58,7 @@ app = FastAPI(
 FILE_NAME = "pedidos.csv"
 HEADERS = ["id_pedido", "id_cliente", "id_producto", "cantidad"]
 
-if not os.path.exists(FILE_NAME):
+if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(HEADERS)
 
@@ -74,6 +78,8 @@ class PedidoRegistro(BaseModel):
 
 def leer_pedidos():
     """Lee todos los pedidos del archivo CSV."""
+    if storage.postgres_enabled():
+        return storage.read_pedidos()
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
@@ -137,6 +143,9 @@ def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
         raise HTTPException(status_code=503, detail="Error al descontar inventario")
 
     # Persistir pedido
+    if storage.postgres_enabled():
+        return storage.create_pedido(id_cliente, id_producto, cantidad)
+
     pedidos = leer_pedidos()
     siguiente_id = max((int(p['id_pedido']) for p in pedidos), default=500) + 1
     with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:

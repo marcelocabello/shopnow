@@ -9,12 +9,16 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
+import storage
 
 
 @asynccontextmanager
 async def lifespan(app):
     """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
     try:
+        if storage.postgres_enabled():
+            storage.ensure_schema()
+            print("✓ Postgres habilitado para servicio de Productos")
         import pika
         print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
@@ -62,7 +66,7 @@ app = FastAPI(
 FILE_NAME = "productos.csv"
 HEADERS = ["id_producto", "descripcion", "precio", "activo", "categoria"]
 
-if not os.path.exists(FILE_NAME):
+if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(HEADERS)
 
@@ -103,6 +107,8 @@ class ProductoRegistroV2(BaseModel):
     categoria: str = Field(default="", example="Electronico") # type: ignore
 
 def leer_productos():
+    if storage.postgres_enabled():
+        return storage.read_productos()
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
@@ -406,8 +412,9 @@ def handle_producto_message(ch, method, properties, body):
             reply_to = properties.reply_to
             correlation_id = properties.correlation_id
             id_producto = message.get('id_producto')
-            productos = leer_productos()
-            existe = any(int(p['id_producto']) == id_producto for p in productos)
+            existe = storage.producto_exists(id_producto) if storage.postgres_enabled() else any(
+                int(p['id_producto']) == id_producto for p in leer_productos()
+            )
             response = {'existe': existe, 'id_producto': id_producto}
             print(f"   - Respondiendo a: {reply_to} con correlation_id: {correlation_id}")
             mq_client.channel.basic_publish(
@@ -419,38 +426,47 @@ def handle_producto_message(ch, method, properties, body):
                 )
             )
         elif routing_key == RK_PRODUCTO_CREAR:
-            productos = leer_productos()
-            siguiente_id = max((int(p['id_producto']) for p in productos), default=0) + 1
-            with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([
-                    siguiente_id,
-                    message.get('descripcion', ''),
-                    message.get('precio', 0),
-                    message.get('activo', True),
-                    message.get('categoria', ''),
-                ])
+            if storage.postgres_enabled():
+                storage.create_producto(message)
+            else:
+                productos = leer_productos()
+                siguiente_id = max((int(p['id_producto']) for p in productos), default=0) + 1
+                with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                    csv.writer(f).writerow([
+                        siguiente_id,
+                        message.get('descripcion', ''),
+                        message.get('precio', 0),
+                        message.get('activo', True),
+                        message.get('categoria', ''),
+                    ])
         elif routing_key == RK_PRODUCTO_ACTUALIZAR:
             id_producto = message.get('id_producto')
-            productos = leer_productos()
-            producto = next((p for p in productos if int(p['id_producto']) == int(id_producto)), None)
-            if producto:
-                for campo in ['descripcion', 'precio', 'activo']:
-                    if message.get(campo) is not None:
-                        producto[campo] = message.get(campo)
-                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=HEADERS)
-                    writer.writeheader()
-                    writer.writerows(productos)
+            if storage.postgres_enabled():
+                storage.update_producto(int(id_producto), message)
+            else:
+                productos = leer_productos()
+                producto = next((p for p in productos if int(p['id_producto']) == int(id_producto)), None)
+                if producto:
+                    for campo in ['descripcion', 'precio', 'activo']:
+                        if message.get(campo) is not None:
+                            producto[campo] = message.get(campo)
+                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=HEADERS)
+                        writer.writeheader()
+                        writer.writerows(productos)
         elif routing_key == RK_PRODUCTO_ELIMINAR:
             id_producto = message.get('id_producto')
-            productos = leer_productos()
-            producto = next((p for p in productos if int(p['id_producto']) == int(id_producto)), None)
-            if producto:
-                productos.remove(producto)
-                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=HEADERS)
-                    writer.writeheader()
-                    writer.writerows(productos)
+            if storage.postgres_enabled():
+                storage.delete_producto(int(id_producto))
+            else:
+                productos = leer_productos()
+                producto = next((p for p in productos if int(p['id_producto']) == int(id_producto)), None)
+                if producto:
+                    productos.remove(producto)
+                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=HEADERS)
+                        writer.writeheader()
+                        writer.writerows(productos)
         
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"✓✓ Operación de productos procesada para routing_key={routing_key}")

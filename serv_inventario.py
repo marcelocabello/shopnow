@@ -8,12 +8,16 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
+import storage
 
 
 @asynccontextmanager
 async def lifespan(app):
     """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
     try:
+        if storage.postgres_enabled():
+            storage.ensure_schema()
+            print("✓ Postgres habilitado para servicio de Inventario")
         import pika
         print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
@@ -63,7 +67,7 @@ FILE_NAME = "inventario.csv"
 HEADERS = ["id_producto", "cantidad"]
 
 # Inicializar Archivo Oficial si no existe
-if not os.path.exists(FILE_NAME):
+if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(HEADERS)
 
@@ -80,6 +84,8 @@ class MovimientoInventario(BaseModel):
     cantidad: int = Field(..., gt=0, example=5) # type: ignore
 
 def leer_inventario():
+    if storage.postgres_enabled():
+        return storage.read_inventario()
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
@@ -362,70 +368,85 @@ def handle_inventario_message(ch, method, properties, body):
             # Descontar inventario
             id_producto = message.get('id_producto')
             cantidad = message.get('cantidad')
-            items = leer_inventario()
-            exito = False
-            
-            for item in items:
-                if int(item['id_producto']) == id_producto:
-                    nueva_cantidad = int(item['cantidad']) - cantidad
-                    if nueva_cantidad < 0:
-                        response = {'exito': False, 'error': 'Stock insuficiente', 'id_producto': id_producto}
-                    else:
-                        item['cantidad'] = str(nueva_cantidad)
-                        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                            writer = csv.DictWriter(f, fieldnames=HEADERS)
-                            writer.writeheader()
-                            writer.writerows(items)
-                        response = {'exito': True, 'id_producto': id_producto, 'nueva_cantidad': nueva_cantidad}
-                        exito = True
-                    break
-            
-            if not exito and not response:
-                response = {'exito': False, 'error': 'Producto no encontrado', 'id_producto': id_producto}
+            if storage.postgres_enabled():
+                response = storage.descontar_inventario(int(id_producto), int(cantidad))
+            else:
+                items = leer_inventario()
+                exito = False
+
+                for item in items:
+                    if int(item['id_producto']) == id_producto:
+                        nueva_cantidad = int(item['cantidad']) - cantidad
+                        if nueva_cantidad < 0:
+                            response = {'exito': False, 'error': 'Stock insuficiente', 'id_producto': id_producto}
+                        else:
+                            item['cantidad'] = str(nueva_cantidad)
+                            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                                writer.writeheader()
+                                writer.writerows(items)
+                            response = {'exito': True, 'id_producto': id_producto, 'nueva_cantidad': nueva_cantidad}
+                            exito = True
+                        break
+
+                if not exito and not response:
+                    response = {'exito': False, 'error': 'Producto no encontrado', 'id_producto': id_producto}
 
         elif routing_key == RK_INVENTARIO_REGISTRAR:
             id_producto = int(message.get('id_producto'))
             cantidad = int(message.get('cantidad'))
-            items = leer_inventario()
-            if not any(int(item['id_producto']) == id_producto for item in items):
-                with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-                    csv.writer(f).writerow([id_producto, cantidad])
+            if storage.postgres_enabled():
+                storage.registrar_inventario(id_producto, cantidad)
+            else:
+                items = leer_inventario()
+                if not any(int(item['id_producto']) == id_producto for item in items):
+                    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                        csv.writer(f).writerow([id_producto, cantidad])
 
         elif routing_key == RK_INVENTARIO_DESCONTAR:
             id_producto = int(message.get('id_producto'))
             cantidad = int(message.get('cantidad'))
-            items = leer_inventario()
-            actualizado = False
-            for item in items:
-                if int(item['id_producto']) == id_producto:
-                    nueva_cantidad = int(item['cantidad']) - cantidad
-                    if nueva_cantidad >= 0:
-                        item['cantidad'] = str(nueva_cantidad)
-                        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                            writer = csv.DictWriter(f, fieldnames=HEADERS)
-                            writer.writeheader()
-                            writer.writerows(items)
-                    actualizado = True
-                    break
-            if not actualizado:
-                raise ValueError(f"Producto {id_producto} no encontrado en inventario")
+            if storage.postgres_enabled():
+                resultado = storage.descontar_inventario(id_producto, cantidad)
+                if not resultado.get('exito'):
+                    raise ValueError(resultado.get('error'))
+            else:
+                items = leer_inventario()
+                actualizado = False
+                for item in items:
+                    if int(item['id_producto']) == id_producto:
+                        nueva_cantidad = int(item['cantidad']) - cantidad
+                        if nueva_cantidad >= 0:
+                            item['cantidad'] = str(nueva_cantidad)
+                            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                                writer.writeheader()
+                                writer.writerows(items)
+                        actualizado = True
+                        break
+                if not actualizado:
+                    raise ValueError(f"Producto {id_producto} no encontrado en inventario")
 
         elif routing_key == RK_INVENTARIO_AGREGAR:
             id_producto = int(message.get('id_producto'))
             cantidad = int(message.get('cantidad'))
-            items = leer_inventario()
-            actualizado = False
-            for item in items:
-                if int(item['id_producto']) == id_producto:
-                    item['cantidad'] = str(int(item['cantidad']) + cantidad)
-                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                        writer = csv.DictWriter(f, fieldnames=HEADERS)
-                        writer.writeheader()
-                        writer.writerows(items)
-                    actualizado = True
-                    break
-            if not actualizado:
-                raise ValueError(f"Producto {id_producto} no encontrado en inventario")
+            if storage.postgres_enabled():
+                if not storage.agregar_inventario(id_producto, cantidad):
+                    raise ValueError(f"Producto {id_producto} no encontrado en inventario")
+            else:
+                items = leer_inventario()
+                actualizado = False
+                for item in items:
+                    if int(item['id_producto']) == id_producto:
+                        item['cantidad'] = str(int(item['cantidad']) + cantidad)
+                        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                            writer = csv.DictWriter(f, fieldnames=HEADERS)
+                            writer.writeheader()
+                            writer.writerows(items)
+                        actualizado = True
+                        break
+                if not actualizado:
+                    raise ValueError(f"Producto {id_producto} no encontrado en inventario")
         
         # Enviar respuesta solo para operaciones request-reply
         if reply_to and correlation_id and response is not None:

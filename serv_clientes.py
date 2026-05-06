@@ -9,12 +9,16 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
+import storage
 
 
 @asynccontextmanager
 async def lifespan(app):
     """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
     try:
+        if storage.postgres_enabled():
+            storage.ensure_schema()
+            print("✓ Postgres habilitado para servicio de Clientes")
         import pika
         print("▶ Conectando a RabbitMQ...")
         mq_client.connect()
@@ -65,7 +69,7 @@ FILE_NAME = "clientes.csv"
 HEADERS = ["id_cliente", "nombre", "correo", "direccion", "telefono", "activo", "rfc", "fecha_registro"]
 
 # Inicializar archivo si no existe
-if not os.path.exists(FILE_NAME):
+if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(HEADERS)
 
@@ -118,6 +122,8 @@ class ClienteRegistroV2(BaseModel):
     fecha_registro: str = Field(default="", example="2026-04-10") # type: ignore
 
 def leer_clientes():
+    if storage.postgres_enabled():
+        return storage.read_clientes()
     with open(FILE_NAME, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
@@ -423,8 +429,9 @@ def handle_cliente_message(ch, method, properties, body):
             reply_to = properties.reply_to
             correlation_id = properties.correlation_id
             id_cliente = message.get('id_cliente')
-            clientes = leer_clientes()
-            existe = any(int(c['id_cliente']) == id_cliente for c in clientes)
+            existe = storage.cliente_exists(id_cliente) if storage.postgres_enabled() else any(
+                int(c['id_cliente']) == id_cliente for c in leer_clientes()
+            )
             response = {'existe': existe, 'id_cliente': id_cliente}
             mq_client.channel.basic_publish(
                 exchange='',
@@ -435,41 +442,50 @@ def handle_cliente_message(ch, method, properties, body):
                 )
             )
         elif routing_key == RK_CLIENTE_CREAR:
-            clientes = leer_clientes()
-            siguiente_id = max((int(c['id_cliente']) for c in clientes), default=100) + 1
-            with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([
-                    siguiente_id,
-                    message.get('nombre', ''),
-                    message.get('correo', ''),
-                    message.get('direccion', ''),
-                    message.get('telefono', ''),
-                    message.get('activo', True),
-                    message.get('rfc', ''),
-                    message.get('fecha_registro', ''),
-                ])
+            if storage.postgres_enabled():
+                storage.create_cliente(message)
+            else:
+                clientes = leer_clientes()
+                siguiente_id = max((int(c['id_cliente']) for c in clientes), default=100) + 1
+                with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                    csv.writer(f).writerow([
+                        siguiente_id,
+                        message.get('nombre', ''),
+                        message.get('correo', ''),
+                        message.get('direccion', ''),
+                        message.get('telefono', ''),
+                        message.get('activo', True),
+                        message.get('rfc', ''),
+                        message.get('fecha_registro', ''),
+                    ])
         elif routing_key == RK_CLIENTE_ACTUALIZAR:
             id_cliente = message.get('id_cliente')
-            clientes = leer_clientes()
-            cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
-            if cliente:
-                for campo in ['nombre', 'correo', 'direccion', 'telefono', 'activo']:
-                    if message.get(campo) is not None:
-                        cliente[campo] = message.get(campo)
-                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=HEADERS)
-                    writer.writeheader()
-                    writer.writerows(clientes)
+            if storage.postgres_enabled():
+                storage.update_cliente(int(id_cliente), message)
+            else:
+                clientes = leer_clientes()
+                cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
+                if cliente:
+                    for campo in ['nombre', 'correo', 'direccion', 'telefono', 'activo']:
+                        if message.get(campo) is not None:
+                            cliente[campo] = message.get(campo)
+                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=HEADERS)
+                        writer.writeheader()
+                        writer.writerows(clientes)
         elif routing_key == RK_CLIENTE_INACTIVAR:
             id_cliente = message.get('id_cliente')
-            clientes = leer_clientes()
-            cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
-            if cliente:
-                cliente['activo'] = "False"
-                with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=HEADERS)
-                    writer.writeheader()
-                    writer.writerows(clientes)
+            if storage.postgres_enabled():
+                storage.inactivate_cliente(int(id_cliente))
+            else:
+                clientes = leer_clientes()
+                cliente = next((c for c in clientes if int(c['id_cliente']) == int(id_cliente)), None)
+                if cliente:
+                    cliente['activo'] = "False"
+                    with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=HEADERS)
+                        writer.writeheader()
+                        writer.writerows(clientes)
         
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"✓ Operación de clientes procesada para routing_key={routing_key}")
