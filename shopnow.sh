@@ -15,10 +15,17 @@ MAGENTA='\033[0;35m'
 WHITE='\033[1;37m'
 NC='\033[0m'  # No Color
 
-SERVICE_CLIENTES_CMD="uvicorn serv_clientes:app --port 8010 --reload"
-SERVICE_PRODUCTOS_CMD="uvicorn serv_productos:app --port 8001 --reload"
-SERVICE_PEDIDOS_CMD="uvicorn serv_pedidos:app --port 8002 --reload"
-SERVICE_INVENTARIO_CMD="uvicorn serv_inventario:app --port 8003 --reload"
+DB_HOST="127.0.0.1"
+DB_PORT="5432"
+DB_NAME="shopnow_663n"
+DB_USER="shopnow_663n_user"
+DB_PASSWORD="shopnow_local_123"
+DB_ENV="SHOPNOW_STORAGE=postgres POSTGRES_HOST=$DB_HOST POSTGRES_PORT=$DB_PORT POSTGRES_DB=$DB_NAME POSTGRES_USER=$DB_USER POSTGRES_PASSWORD=$DB_PASSWORD"
+
+SERVICE_CLIENTES_CMD="$DB_ENV uvicorn serv_clientes:app --port 8010 --reload"
+SERVICE_PRODUCTOS_CMD="$DB_ENV uvicorn serv_productos:app --port 8001 --reload"
+SERVICE_PEDIDOS_CMD="$DB_ENV uvicorn serv_pedidos:app --port 8002 --reload"
+SERVICE_INVENTARIO_CMD="$DB_ENV uvicorn serv_inventario:app --port 8003 --reload"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv2"
 VENV_ACTIVATE="$VENV_DIR/bin/activate"
@@ -80,6 +87,39 @@ bootstrap_rabbitmq() {
     fi
 }
 
+bootstrap_postgres() {
+    echo -e "${YELLOW}▶ Verificando Postgres...${NC}"
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "  ${RED}✗ No se encontró docker en el sistema${NC}"
+        return 1
+    fi
+
+    if ! docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "shopnow-postgres"; then
+        echo -e "  ${YELLOW}○ No existe el contenedor shopnow-postgres. Creándolo...${NC}"
+        docker run -d \
+            --name shopnow-postgres \
+            -e POSTGRES_DB="$DB_NAME" \
+            -e POSTGRES_USER="$DB_USER" \
+            -e POSTGRES_PASSWORD="$DB_PASSWORD" \
+            -p 5432:5432 \
+            postgres:16 > /dev/null 2>&1 || {
+            echo -e "  ${RED}✗ No se pudo crear el contenedor Postgres${NC}"
+            return 1
+        }
+        echo -e "  ${GREEN}✓ Contenedor Postgres creado${NC}"
+        return 0
+    fi
+
+    docker start shopnow-postgres > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo -e "  ${GREEN}✓ Postgres iniciado (puerto 5432)${NC}"
+    else
+        echo -e "  ${RED}✗ No se pudo iniciar Postgres${NC}"
+        return 1
+    fi
+}
+
 start_service() {
     local service_name="$1"
     local cmd="$2"
@@ -91,7 +131,7 @@ start_service() {
         return 0
     fi
 
-    nohup $cmd > /dev/null 2>&1 &
+    nohup bash -lc "$cmd" > /tmp/${service_name}.log 2>&1 &
     local pid=$!
     echo -e "${GREEN}✓ ${service_name} iniciado (PID: ${pid}, puerto ${port})${NC}"
 }
@@ -201,6 +241,7 @@ mostrar_ayuda() {
     echo ""
     echo -e "${WHITE}Servicios:${NC}"
     echo -e "  ${MAGENTA}RabbitMQ${NC}:  puerto 5672 (amqp), 15672 (dashboard)"
+    echo -e "  ${MAGENTA}Postgres${NC}:  puerto 5432 (DB: ${DB_NAME}, user: ${DB_USER})"
     echo -e "  ${MAGENTA}Clientes${NC}:   puerto 8010"
     echo -e "  ${MAGENTA}Productos${NC}:  puerto 8001"
     echo -e "  ${MAGENTA}Pedidos${NC}:    puerto 8002"
@@ -226,9 +267,13 @@ iniciar_servicios() {
         echo -e "  ${RED}✗ No fue posible preparar RabbitMQ${NC}"
         return 1
     fi
+    if ! bootstrap_postgres; then
+        echo -e "  ${RED}✗ No fue posible preparar Postgres${NC}"
+        return 1
+    fi
 
-    echo -e "${YELLOW}▶ Esperando que RabbitMQ esté disponible...${NC}"
-    sleep 8
+    echo -e "${YELLOW}▶ Esperando que RabbitMQ y Postgres estén disponibles...${NC}"
+    sleep 10
     echo ""
 
     # Iniciar Clientes
@@ -327,6 +372,15 @@ detener_servicios() {
         echo -e "${YELLOW}○ RabbitMQ${NC} - ${YELLOW}No estaba ejecutándose${NC}"
     fi
 
+    # Detener Postgres
+    echo -e "${YELLOW}▶ Deteniendo Postgres...${NC}"
+    docker stop shopnow-postgres > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Postgres${NC} - ${RED}Detenido${NC}"
+    else
+        echo -e "${YELLOW}○ Postgres${NC} - ${YELLOW}No estaba ejecutándose${NC}"
+    fi
+
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${RED}✓ Todos los servicios han sido detenidos${NC}"
@@ -352,6 +406,15 @@ verificar_estado() {
         echo -e "  ${CYAN}Dashboard: http://localhost:15672${NC}"
     else
         echo -e "${RED}✗ RabbitMQ (puerto 5672)${NC} - ${RED}DETENIDO${NC}"
+    fi
+    docker ps --filter "name=shopnow-postgres" --quiet 2>/dev/null | grep -q .
+    if [ $? -eq 0 ]; then
+        CONTAINER_ID=$(docker ps --filter "name=shopnow-postgres" --format "{{.ID}}" 2>/dev/null | head -1)
+        echo -e "${GREEN}✓ Postgres (puerto 5432)${NC} - ${GREEN}EJECUTÁNDOSE${NC}"
+        echo -e "  ${CYAN}Container: ${CONTAINER_ID:0:12}${NC}"
+        echo -e "  ${CYAN}DB: ${DB_NAME} | User: ${DB_USER}${NC}"
+    else
+        echo -e "${RED}✗ Postgres (puerto 5432)${NC} - ${RED}DETENIDO${NC}"
     fi
     echo ""
     

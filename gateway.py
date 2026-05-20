@@ -1,10 +1,12 @@
 import json
 import os
 from typing import Dict
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 
@@ -26,6 +28,7 @@ SERVICE_TARGETS: Dict[str, Dict[str, str]] = {
         "label": "Inventario",
     },
 }
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 
 ALL_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 HOP_BY_HOP_HEADERS = {
@@ -202,6 +205,16 @@ def panel() -> str:
       </body>
     </html>
     """
+
+
+@app.get("/ui", response_class=FileResponse)
+def ui_index():
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/ui/app.js", response_class=FileResponse)
+def ui_app_js():
+    return FileResponse(FRONTEND_DIR / "app.js")
 
 
 @app.api_route("/{service_name}", methods=ALL_METHODS)

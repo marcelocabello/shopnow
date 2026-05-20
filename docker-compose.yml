@@ -4,3 +4,17 @@ services:
     ports:
       - "5672:5672"   #Puerto de comunicación para el bus de mensajería
       - "15672:15672" #Puerto para acceder a la consola de administración web
+  postgres:
+    image: postgres:16
+    container_name: shopnow-postgres
+    environment:
+      POSTGRES_DB: shopnow_663n
+      POSTGRES_USER: shopnow_663n_user
+      POSTGRES_PASSWORD: shopnow_local_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - shopnow_pgdata:/var/lib/postgresql/data
+
+volumes:
+  shopnow_pgdata:

@@ -10,6 +10,7 @@ from typing import List
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 import storage
+from ui_pages import render_service_ui
 
 
 @asynccontextmanager
@@ -54,6 +55,11 @@ app = FastAPI(
         "name": "Arturo Barajas, Profesor de SOA - TecNM Querétaro",
     }
 )
+
+
+@app.get("/ui", include_in_schema=False)
+def pedidos_ui():
+    return render_service_ui("pedidos", "ShopNow Pedidos")
 
 FILE_NAME = "pedidos.csv"
 HEADERS = ["id_pedido", "id_cliente", "id_producto", "cantidad"]

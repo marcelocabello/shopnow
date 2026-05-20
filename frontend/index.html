@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ShopNow Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              ink: "#111827",
+              aqua: "#0ea5a4",
+              coral: "#f97316",
+              sky: "#38bdf8"
+            },
+            boxShadow: {
+              glow: "0 10px 40px rgba(14,165,164,.25)"
+            }
+          }
+        }
+      };
+    </script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="bg-slate-950">
+    <div id="root"></div>
+    <script type="text/babel" src="/ui/app.js"></script>
+  </body>
+</html>

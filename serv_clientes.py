@@ -10,6 +10,7 @@ from typing import List, Optional
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 import storage
+from ui_pages import render_service_ui
 
 
 @asynccontextmanager
@@ -62,6 +63,11 @@ app = FastAPI(
         "name": "Arturo Barajas, Profesor de SOA - TecNM Querétaro",
     }
 )
+
+
+@app.get("/ui", include_in_schema=False)
+def clientes_ui():
+    return render_service_ui("clientes", "ShopNow Clientes")
 
 # /home/boomer/ITQ/SOA/ShopNow_PHP/shopnow/var/db_clientes.csv
 # /home/boomer/ITQ/SOA/ShopNow/clientes.csv

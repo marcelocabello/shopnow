@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 import storage
+from ui_pages import render_service_ui
 
 
 @asynccontextmanager
@@ -62,6 +63,11 @@ app = FastAPI(
         "name": "Arturo Barajas, Profesor de SOA - TecNM Querétaro",
     }
 )
+
+
+@app.get("/ui", include_in_schema=False)
+def inventario_ui():
+    return render_service_ui("inventario", "ShopNow Inventario")
 
 FILE_NAME = "inventario.csv"
 HEADERS = ["id_producto", "cantidad"]
