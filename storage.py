@@ -17,12 +17,10 @@ DEFAULT_USER = "shopnow_663n_user"
 
 
 def postgres_enabled() -> bool:
-    mode = os.getenv("SHOPNOW_STORAGE", "auto").lower()
+    mode = os.getenv("SHOPNOW_STORAGE", "postgres").lower()
     if mode == "csv":
-        return False
-    if mode == "postgres":
-        return True
-    return bool(os.getenv("POSTGRES_HOST"))
+        raise RuntimeError("El modo CSV ya no está soportado; usa Postgres en Docker")
+    return True
 
 
 def _postgres_settings() -> dict[str, Any]:
@@ -51,7 +49,12 @@ def ensure_schema() -> None:
         return
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+            # Evita carreras cuando múltiples microservicios arrancan al mismo tiempo.
+            cur.execute("SELECT pg_advisory_lock(663001)")
+            cur.execute("SELECT to_regclass('public.clientes')")
+            if cur.fetchone()[0] is None:
+                cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+            cur.execute("SELECT pg_advisory_unlock(663001)")
 
 
 def _fetch_all(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:

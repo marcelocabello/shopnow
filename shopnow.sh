@@ -16,7 +16,7 @@ WHITE='\033[1;37m'
 NC='\033[0m'  # No Color
 
 DB_HOST="127.0.0.1"
-DB_PORT="5432"
+DB_PORT="5433"
 DB_NAME="shopnow_663n"
 DB_USER="shopnow_663n_user"
 DB_PASSWORD="shopnow_local_123"
@@ -102,7 +102,7 @@ bootstrap_postgres() {
             -e POSTGRES_DB="$DB_NAME" \
             -e POSTGRES_USER="$DB_USER" \
             -e POSTGRES_PASSWORD="$DB_PASSWORD" \
-            -p 5432:5432 \
+            -p "$DB_PORT":5432 \
             postgres:16 > /dev/null 2>&1 || {
             echo -e "  ${RED}✗ No se pudo crear el contenedor Postgres${NC}"
             return 1
@@ -113,11 +113,35 @@ bootstrap_postgres() {
 
     docker start shopnow-postgres > /dev/null 2>&1
     if [ $? -eq 0 ]; then
-        echo -e "  ${GREEN}✓ Postgres iniciado (puerto 5432)${NC}"
+        echo -e "  ${GREEN}✓ Postgres iniciado (puerto ${DB_PORT})${NC}"
     else
         echo -e "  ${RED}✗ No se pudo iniciar Postgres${NC}"
         return 1
     fi
+
+    # Validar credenciales esperadas; si no coinciden, recrear contenedor local.
+    sleep 2
+    if ! docker exec shopnow-postgres sh -lc "PGPASSWORD='$DB_PASSWORD' psql -U '$DB_USER' -d '$DB_NAME' -c 'select 1' >/dev/null 2>&1"; then
+        echo -e "  ${YELLOW}○ Credenciales de Postgres no coinciden. Recreando contenedor local...${NC}"
+        docker rm -f -v shopnow-postgres > /dev/null 2>&1
+        docker run -d \
+            --name shopnow-postgres \
+            -e POSTGRES_DB="$DB_NAME" \
+            -e POSTGRES_USER="$DB_USER" \
+            -e POSTGRES_PASSWORD="$DB_PASSWORD" \
+            -p "$DB_PORT":5432 \
+            postgres:16 > /dev/null 2>&1 || {
+            echo -e "  ${RED}✗ No se pudo recrear el contenedor Postgres${NC}"
+            return 1
+        }
+        sleep 3
+    fi
+
+    if ! docker exec shopnow-postgres sh -lc "PGPASSWORD='$DB_PASSWORD' psql -U '$DB_USER' -d '$DB_NAME' -c 'select 1' >/dev/null 2>&1"; then
+        echo -e "  ${RED}✗ Postgres sigue sin autenticar con las credenciales esperadas${NC}"
+        return 1
+    fi
+    echo -e "  ${GREEN}✓ Credenciales de Postgres validadas${NC}"
 }
 
 start_service() {
@@ -175,7 +199,7 @@ mostrar_menu_runtime() {
         echo -e "${WHITE}7) Iniciar Pedidos${NC}"
         echo -e "${WHITE}8) Detener Inventario${NC}"
         echo -e "${WHITE}9) Iniciar Inventario${NC}"
-        echo -e "${WHITE}10) Reiniciar RabbitMQ${NC}"
+        echo -e "${WHITE}10) Reiniciar Postgres${NC}"
         echo -e "${WHITE}11) Salir del menú (servicios siguen corriendo)${NC}"
         echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
         read -r -p "Selecciona una opción [1-11]: " opcion
@@ -209,12 +233,12 @@ mostrar_menu_runtime() {
                 start_service "serv_inventario" "$SERVICE_INVENTARIO_CMD" "8003"
                 ;;
             10)
-                echo -e "${YELLOW}▶ Reiniciando RabbitMQ...${NC}"
-                docker restart shopnow-rabbitmq > /dev/null 2>&1
+                echo -e "${YELLOW}▶ Reiniciando Postgres...${NC}"
+                docker restart shopnow-postgres > /dev/null 2>&1
                 if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✓ RabbitMQ reiniciado${NC}"
+                    echo -e "${GREEN}✓ Postgres reiniciado${NC}"
                 else
-                    echo -e "${RED}✗ No se pudo reiniciar RabbitMQ${NC}"
+                    echo -e "${RED}✗ No se pudo reiniciar Postgres${NC}"
                 fi
                 ;;
             11)
@@ -235,13 +259,12 @@ mostrar_ayuda() {
     echo -e "${CYAN}Uso: ./shopnow.sh [start|stop|status]${NC}"
     echo ""
     echo -e "${WHITE}Opciones:${NC}"
-    echo -e "  ${GREEN}start${NC}   - Levanta RabbitMQ y todos los servicios de ShopNow"
-    echo -e "  ${RED}stop${NC}    - Detiene todos los servicios y RabbitMQ"
+    echo -e "  ${GREEN}start${NC}   - Levanta Postgres y todos los servicios de ShopNow"
+    echo -e "  ${RED}stop${NC}    - Detiene todos los servicios y Postgres"
     echo -e "  ${BLUE}status${NC}  - Muestra el estado de los servicios"
     echo ""
     echo -e "${WHITE}Servicios:${NC}"
-    echo -e "  ${MAGENTA}RabbitMQ${NC}:  puerto 5672 (amqp), 15672 (dashboard)"
-    echo -e "  ${MAGENTA}Postgres${NC}:  puerto 5432 (DB: ${DB_NAME}, user: ${DB_USER})"
+    echo -e "  ${MAGENTA}Postgres${NC}:  puerto ${DB_PORT} (DB: ${DB_NAME}, user: ${DB_USER})"
     echo -e "  ${MAGENTA}Clientes${NC}:   puerto 8010"
     echo -e "  ${MAGENTA}Productos${NC}:  puerto 8001"
     echo -e "  ${MAGENTA}Pedidos${NC}:    puerto 8002"
@@ -254,7 +277,7 @@ mostrar_ayuda() {
 iniciar_servicios() {
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}       INICIANDO SHOPNOW - RabbitMQ + Microservicios${NC}"
+    echo -e "${BLUE}       INICIANDO SHOPNOW - Postgres + Microservicios${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
@@ -263,17 +286,13 @@ iniciar_servicios() {
         return 1
     fi
 
-    if ! bootstrap_rabbitmq; then
-        echo -e "  ${RED}✗ No fue posible preparar RabbitMQ${NC}"
-        return 1
-    fi
     if ! bootstrap_postgres; then
-        echo -e "  ${RED}✗ No fue posible preparar Postgres${NC}"
+        echo -e "  ${RED}✗ No fue posible preparar Postgres en Docker. Abortando arranque.${NC}"
         return 1
     fi
 
-    echo -e "${YELLOW}▶ Esperando que RabbitMQ y Postgres estén disponibles...${NC}"
-    sleep 10
+    echo -e "${YELLOW}▶ Esperando que Postgres esté disponible...${NC}"
+    sleep 6
     echo ""
 
     # Iniciar Clientes
@@ -309,12 +328,6 @@ iniciar_servicios() {
     echo -e "  • ${WHITE}Pedidos${NC}:    ${CYAN}http://localhost:8002/docs${NC}"
     echo -e "  • ${WHITE}Inventario${NC}: ${CYAN}http://localhost:8003/docs${NC}"
     echo ""
-    echo -e "${CYAN}🐰 RABBITMQ DASHBOARD:${NC}"
-    echo -e "  • ${WHITE}URL${NC}:       ${CYAN}http://localhost:15672${NC}"
-    echo -e "  • ${WHITE}Usuario${NC}:   ${CYAN}guest${NC}"
-    echo -e "  • ${WHITE}Contraseña${NC}: ${CYAN}guest${NC}"
-    echo ""
-
     echo -e "${MAGENTA}Modo pruebas asíncronas:${NC} puedes detener/levantar servicios sin cerrar esta sesión."
     mostrar_menu_runtime
 }
@@ -363,15 +376,6 @@ detener_servicios() {
     
     echo ""
 
-    # Detener RabbitMQ
-    echo -e "${YELLOW}▶ Deteniendo RabbitMQ...${NC}"
-    docker stop shopnow-rabbitmq > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ RabbitMQ${NC} - ${RED}Detenido${NC}"
-    else
-        echo -e "${YELLOW}○ RabbitMQ${NC} - ${YELLOW}No estaba ejecutándose${NC}"
-    fi
-
     # Detener Postgres
     echo -e "${YELLOW}▶ Deteniendo Postgres...${NC}"
     docker stop shopnow-postgres > /dev/null 2>&1
@@ -397,24 +401,14 @@ verificar_estado() {
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
     
-    # Verificar RabbitMQ
-    docker ps --filter "name=shopnow-rabbitmq" --quiet 2>/dev/null | grep -q .
-    if [ $? -eq 0 ]; then
-        CONTAINER_ID=$(docker ps --filter "name=shopnow-rabbitmq" --format "{{.ID}}" 2>/dev/null | head -1)
-        echo -e "${GREEN}✓ RabbitMQ (puerto 5672)${NC} - ${GREEN}EJECUTÁNDOSE${NC}"
-        echo -e "  ${CYAN}Container: ${CONTAINER_ID:0:12}${NC}"
-        echo -e "  ${CYAN}Dashboard: http://localhost:15672${NC}"
-    else
-        echo -e "${RED}✗ RabbitMQ (puerto 5672)${NC} - ${RED}DETENIDO${NC}"
-    fi
     docker ps --filter "name=shopnow-postgres" --quiet 2>/dev/null | grep -q .
     if [ $? -eq 0 ]; then
         CONTAINER_ID=$(docker ps --filter "name=shopnow-postgres" --format "{{.ID}}" 2>/dev/null | head -1)
-        echo -e "${GREEN}✓ Postgres (puerto 5432)${NC} - ${GREEN}EJECUTÁNDOSE${NC}"
+        echo -e "${GREEN}✓ Postgres (puerto ${DB_PORT})${NC} - ${GREEN}EJECUTÁNDOSE${NC}"
         echo -e "  ${CYAN}Container: ${CONTAINER_ID:0:12}${NC}"
         echo -e "  ${CYAN}DB: ${DB_NAME} | User: ${DB_USER}${NC}"
     else
-        echo -e "${RED}✗ Postgres (puerto 5432)${NC} - ${RED}DETENIDO${NC}"
+        echo -e "${RED}✗ Postgres (puerto ${DB_PORT})${NC} - ${RED}DETENIDO${NC}"
     fi
     echo ""
     
