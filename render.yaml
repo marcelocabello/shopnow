@@ -1,8 +1,10 @@
-services:
-  - type: pserv
-    name: shopnow-postgres
-    env: postgres
+databases:
+  - name: shopnow-postgres
+    databaseName: shopnow
+    user: shopnow_user
     plan: free
+
+services:
 
   - type: web
     name: shopnow-clientes
