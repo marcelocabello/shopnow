@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 try:
     import psycopg2
@@ -24,6 +25,19 @@ def postgres_enabled() -> bool:
 
 
 def _postgres_settings() -> dict[str, Any]:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url:
+        parsed = urlparse(database_url)
+        if parsed.scheme.startswith("postgres"):
+            return {
+                "host": parsed.hostname or "",
+                "port": parsed.port or 5432,
+                "dbname": (parsed.path or "").lstrip("/") or DEFAULT_DB,
+                "user": unquote(parsed.username or DEFAULT_USER),
+                "password": unquote(parsed.password or ""),
+                "sslmode": os.getenv("POSTGRES_SSLMODE", "require"),
+            }
+
     return {
         "host": os.getenv("POSTGRES_HOST", ""),
         "port": int(os.getenv("POSTGRES_PORT", "5432")),
