@@ -14,41 +14,11 @@ from ui_pages import render_service_ui
 
 @asynccontextmanager
 async def lifespan(app):
-    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
-    try:
-        if storage.postgres_enabled():
-            storage.ensure_schema()
-            print("✓ Postgres habilitado para servicio de Inventario")
-        import pika
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        
-        # Declarar exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        
-        # Declarar y vincular cola para solicitudes de get y descontar
-        mq_client.declare_queue('inventario_requests')
-        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['get_inventario'])
-        mq_client.bind_queue('inventario_requests', 'servicios', ROUTING_KEYS['descontar_inventario'])
-        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.registrar')
-        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.agregar')
-        mq_client.bind_queue('inventario_requests', 'servicios', 'inventario.cmd.descontar')
-        
-        # Iniciar consumidor en thread separado
-        mq_client.start_consumer_thread('inventario_requests', handle_inventario_message)
-        
-        print("✓ Servicio de Inventario iniciado y escuchando en RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-    
+    """Startup/shutdown sin dependencia de RabbitMQ."""
+    if storage.postgres_enabled():
+        storage.ensure_schema()
+        print("✓ Postgres habilitado para servicio de Inventario")
     yield
-    
-    try:
-        mq_client.close()
-        print("✓ Servicio de Inventario desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")
 
 
 app = FastAPI(
@@ -68,6 +38,11 @@ app = FastAPI(
 @app.get("/ui", include_in_schema=False)
 def inventario_ui():
     return render_service_ui("inventario", "ShopNow Inventario")
+
+
+@app.get("/", include_in_schema=False)
+def inventario_home():
+    return {"servicio": "inventario", "ui": "/ui", "docs": "/docs"}
 
 FILE_NAME = "inventario.csv"
 HEADERS = ["id_producto", "cantidad"]
@@ -231,11 +206,19 @@ def registrar_inventario(mov: MovimientoInventario, usuario: str = Depends(verif
     Raises:
         HTTPException: Con status 400 si el producto ya existe en inventario.
     """
-    _publicar_comando_inventario(
-        RK_INVENTARIO_REGISTRAR,
-        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
-    )
-    return {"mensaje": "Solicitud de registro encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    if storage.postgres_enabled():
+        ok = storage.registrar_inventario(mov.id_producto, mov.cantidad)
+    else:
+        items = leer_inventario()
+        if any(int(i["id_producto"]) == mov.id_producto for i in items):
+            ok = False
+        else:
+            with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerow([mov.id_producto, mov.cantidad])
+            ok = True
+    if not ok:
+        raise HTTPException(status_code=400, detail="Producto ya registrado en inventario")
+    return {"mensaje": "Producto registrado en inventario", "status": "success"}
 
 @app.post(
     "/inventario/descontar",
@@ -280,11 +263,27 @@ def descontar_stock(mov: MovimientoInventario, usuario: str = Depends(verificar_
         HTTPException: Con status 400 si stock es insuficiente.
         HTTPException: Con status 404 si el producto no existe en inventario.
     """
-    _publicar_comando_inventario(
-        RK_INVENTARIO_DESCONTAR,
-        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
-    )
-    return {"mensaje": "Solicitud de descuento encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    if storage.postgres_enabled():
+        result = storage.descontar_inventario(mov.id_producto, mov.cantidad)
+    else:
+        items = leer_inventario()
+        item = next((i for i in items if int(i["id_producto"]) == mov.id_producto), None)
+        if not item:
+            raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
+        stock = int(item["cantidad"])
+        if stock < mov.cantidad:
+            raise HTTPException(status_code=400, detail="Stock insuficiente")
+        item["cantidad"] = stock - mov.cantidad
+        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=HEADERS)
+            writer.writeheader()
+            writer.writerows(items)
+        result = {"exito": True, "nueva_cantidad": int(item["cantidad"])}
+    if not result.get("exito"):
+        if result.get("error") == "Producto no encontrado":
+            raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
+        raise HTTPException(status_code=400, detail=result.get("error", "No se pudo descontar stock"))
+    return {"mensaje": "Descuento de inventario aplicado exitosamente", "status": "success"}
 
 @app.post(
     "/inventario/agregar",
@@ -327,11 +326,29 @@ def agregar_stock(mov: MovimientoInventario, usuario: str = Depends(verificar_to
     Raises:
         HTTPException: Con status 404 si el producto no existe en inventario.
     """
-    _publicar_comando_inventario(
-        RK_INVENTARIO_AGREGAR,
-        {"id_producto": mov.id_producto, "cantidad": mov.cantidad},
-    )
-    return {"mensaje": "Solicitud de agregado encolada", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    if storage.postgres_enabled():
+        ok = storage.agregar_inventario(mov.id_producto, mov.cantidad)
+        nueva = None
+        if ok:
+            item = storage.get_inventario_item(mov.id_producto)
+            nueva = int(item["cantidad"]) if item else None
+    else:
+        items = leer_inventario()
+        item = next((i for i in items if int(i["id_producto"]) == mov.id_producto), None)
+        if not item:
+            ok = False
+            nueva = None
+        else:
+            item["cantidad"] = int(item["cantidad"]) + mov.cantidad
+            nueva = int(item["cantidad"])
+            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                writer.writeheader()
+                writer.writerows(items)
+            ok = True
+    if not ok:
+        raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
+    return {"mensaje": "Existencias agregadas exitosamente", "nueva_cantidad": nueva, "status": "success"}
 
 
 # ============================================================================

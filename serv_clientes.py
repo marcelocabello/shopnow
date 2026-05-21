@@ -15,40 +15,11 @@ from ui_pages import render_service_ui
 
 @asynccontextmanager
 async def lifespan(app):
-    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
-    try:
-        if storage.postgres_enabled():
-            storage.ensure_schema()
-            print("✓ Postgres habilitado para servicio de Clientes")
-        import pika
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        
-        # Declarar exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        
-        # Declarar y vincular cola para solicitudes de validación
-        mq_client.declare_queue('clientes_requests')
-        mq_client.bind_queue('clientes_requests', 'servicios', ROUTING_KEYS['validate_cliente'])
-        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.crear')
-        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.actualizar')
-        mq_client.bind_queue('clientes_requests', 'servicios', 'clientes.cmd.inactivar')
-        
-        # Iniciar consumidor en thread separado
-        mq_client.start_consumer_thread('clientes_requests', handle_cliente_message)
-        
-        print("✓ Servicio de Clientes iniciado y escuchando en RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-    
+    """Startup/shutdown sin dependencia de RabbitMQ."""
+    if storage.postgres_enabled():
+        storage.ensure_schema()
+        print("✓ Postgres habilitado para servicio de Clientes")
     yield
-    
-    try:
-        mq_client.close()
-        print("✓ Servicio de Clientes desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")
 
 
 app = FastAPI(
@@ -68,6 +39,11 @@ app = FastAPI(
 @app.get("/ui", include_in_schema=False)
 def clientes_ui():
     return render_service_ui("clientes", "ShopNow Clientes")
+
+
+@app.get("/", include_in_schema=False)
+def clientes_home():
+    return {"servicio": "clientes", "ui": "/ui", "docs": "/docs"}
 
 # /home/boomer/ITQ/SOA/ShopNow_PHP/shopnow/var/db_clientes.csv
 # /home/boomer/ITQ/SOA/ShopNow/clientes.csv
@@ -187,23 +163,35 @@ def get_clientes_v2(usuario: str = Depends(verificar_token)):
 
 @app.post("/v2/clientes", tags=["Versionado"], summary="Registrar cliente v2 — acepta rfc y fecha_registro", status_code=202)
 def registrar_cliente_v2(nuevo: ClienteRegistroV2, usuario: str = Depends(verificar_token)):
-    """Encola el alta de cliente v2 para procesamiento asíncrono."""
-    _publicar_comando_cliente(
-        RK_CLIENTE_CREAR,
-        {
-            "nombre": nuevo.nombre,
-            "correo": nuevo.correo,
-            "direccion": nuevo.direccion,
-            "telefono": nuevo.telefono,
-            "activo": nuevo.activo,
-            "rfc": nuevo.rfc,
-            "fecha_registro": nuevo.fecha_registro,
-        },
-    )
+    """Registra cliente v2 de forma síncrona (sin RabbitMQ)."""
+    payload = {
+        "nombre": nuevo.nombre,
+        "correo": nuevo.correo,
+        "direccion": nuevo.direccion,
+        "telefono": nuevo.telefono,
+        "activo": nuevo.activo,
+        "rfc": nuevo.rfc,
+        "fecha_registro": nuevo.fecha_registro,
+    }
+    if storage.postgres_enabled():
+        storage.create_cliente(payload)
+    else:
+        clientes = leer_clientes()
+        siguiente_id = max((int(c["id_cliente"]) for c in clientes), default=100) + 1
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                siguiente_id,
+                payload["nombre"],
+                payload["correo"],
+                payload["direccion"],
+                payload["telefono"],
+                payload["activo"],
+                payload["rfc"],
+                payload["fecha_registro"],
+            ])
     return {
-        "mensaje": "Cliente v2 encolado exitosamente",
-        "status": "queued",
-        "nota": "Se procesará automáticamente por RabbitMQ",
+        "mensaje": "Cliente v2 registrado exitosamente",
+        "status": "success",
     }
 
 
@@ -284,19 +272,32 @@ def registrar_cliente(nuevo: ClienteRegistro, usuario: str = Depends(verificar_t
     Returns:
         dict: Diccionario con mensaje de éxito e ID asignado del cliente.
     """
-    _publicar_comando_cliente(
-        RK_CLIENTE_CREAR,
-        {
-            "nombre": nuevo.nombre,
-            "correo": nuevo.correo,
-            "direccion": nuevo.direccion,
-            "telefono": nuevo.telefono,
-            "activo": nuevo.activo,
-            "rfc": "",
-            "fecha_registro": "",
-        },
-    )
-    return {"mensaje": "Cliente encolado exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    payload = {
+        "nombre": nuevo.nombre,
+        "correo": nuevo.correo,
+        "direccion": nuevo.direccion,
+        "telefono": nuevo.telefono,
+        "activo": nuevo.activo,
+        "rfc": "",
+        "fecha_registro": "",
+    }
+    if storage.postgres_enabled():
+        storage.create_cliente(payload)
+    else:
+        clientes = leer_clientes()
+        siguiente_id = max((int(c["id_cliente"]) for c in clientes), default=100) + 1
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                siguiente_id,
+                payload["nombre"],
+                payload["correo"],
+                payload["direccion"],
+                payload["telefono"],
+                payload["activo"],
+                payload["rfc"],
+                payload["fecha_registro"],
+            ])
+    return {"mensaje": "Cliente registrado exitosamente", "status": "success"}
 
 @app.delete(
     "/clientes/{id_cliente}",
@@ -342,8 +343,23 @@ def eliminar_cliente(id_cliente: int, usuario: str = Depends(verificar_token)):
     Raises:
         HTTPException: Con status 404 si el cliente no existe.
     """
-    _publicar_comando_cliente(RK_CLIENTE_INACTIVAR, {"id_cliente": id_cliente})
-    return {"mensaje": "Solicitud de baja encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    if storage.postgres_enabled():
+        ok = storage.inactivate_cliente(int(id_cliente))
+    else:
+        clientes = leer_clientes()
+        cliente = next((c for c in clientes if int(c["id_cliente"]) == int(id_cliente)), None)
+        if cliente:
+            cliente["activo"] = "False"
+            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                writer.writeheader()
+                writer.writerows(clientes)
+            ok = True
+        else:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return {"mensaje": "Cliente inactivado exitosamente", "status": "success"}
 
 @app.patch(
     "/clientes/{id_cliente}",
@@ -399,18 +415,33 @@ def actualizar_cliente_parcial(id_cliente: int, update: ClienteUpdate, usuario: 
     Raises:
         HTTPException: Con status 404 si el cliente no existe.
     """
-    _publicar_comando_cliente(
-        RK_CLIENTE_ACTUALIZAR,
-        {
-            "id_cliente": id_cliente,
-            "nombre": update.nombre,
-            "correo": update.correo,
-            "direccion": update.direccion,
-            "telefono": update.telefono,
-            "activo": update.activo,
-        },
-    )
-    return {"mensaje": "Solicitud de actualización encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    payload = {
+        "id_cliente": id_cliente,
+        "nombre": update.nombre,
+        "correo": update.correo,
+        "direccion": update.direccion,
+        "telefono": update.telefono,
+        "activo": update.activo,
+    }
+    if storage.postgres_enabled():
+        ok = storage.update_cliente(int(id_cliente), payload)
+    else:
+        clientes = leer_clientes()
+        cliente = next((c for c in clientes if int(c["id_cliente"]) == int(id_cliente)), None)
+        if cliente:
+            for campo in ["nombre", "correo", "direccion", "telefono", "activo"]:
+                if payload.get(campo) is not None:
+                    cliente[campo] = payload.get(campo)
+            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                writer.writeheader()
+                writer.writerows(clientes)
+            ok = True
+        else:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return {"mensaje": "Cliente actualizado exitosamente", "status": "success"}
 
 
 # ============================================================================

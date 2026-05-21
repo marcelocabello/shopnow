@@ -11,36 +11,16 @@ from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 import storage
 from ui_pages import render_service_ui
+from ui_pages import render_service_ui
 
 
 @asynccontextmanager
 async def lifespan(app):
-    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
-    try:
-        if storage.postgres_enabled():
-            storage.ensure_schema()
-            print("✓ Postgres habilitado para servicio de Pedidos")
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        # Declarar el exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        # Declarar y vincular cola para pedidos asíncronos
-        mq_client.declare_queue('pedidos_requests')
-        mq_client.bind_queue('pedidos_requests', 'servicios', ROUTING_KEYS['crear_pedido'])
-        # Iniciar consumidor de pedidos encolados
-        mq_client.start_consumer_thread('pedidos_requests', handle_pedido_message)
-        print("✓ Servicio de Pedidos iniciado y conectado a RabbitMQ (consumer activo)")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-    
+    """Startup/shutdown sin dependencia de RabbitMQ."""
+    if storage.postgres_enabled():
+        storage.ensure_schema()
+        print("✓ Postgres habilitado para servicio de Pedidos")
     yield
-    
-    try:
-        mq_client.close()
-        print("✓ Servicio de Pedidos desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")
 
 
 app = FastAPI(
@@ -60,6 +40,12 @@ app = FastAPI(
 @app.get("/ui", include_in_schema=False)
 def pedidos_ui():
     return render_service_ui("pedidos", "ShopNow Pedidos")
+
+
+@app.get("/", include_in_schema=False)
+def pedidos_home():
+    return {"servicio": "pedidos", "ui": "/ui", "docs": "/docs"}
+
 
 FILE_NAME = "pedidos.csv"
 HEADERS = ["id_pedido", "id_cliente", "id_producto", "cantidad"]
@@ -254,40 +240,33 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
 @app.post(
     "/pedidos",
     tags=["Operaciones"],
-    summary="Crear nuevo pedido (asíncrono por defecto)",
-    status_code=202,
+    summary="Crear nuevo pedido",
+    status_code=201,
     responses={
-        202: {
-            "description": "Pedido encolado exitosamente. Se procesará automáticamente cuando todos los servicios estén disponibles.",
+        201: {
+            "description": "Pedido creado exitosamente",
             "content": {
                 "application/json": {
                     "example": {
-                        "mensaje": "Pedido encolado exitosamente",
-                        "status": "queued"
+                        "mensaje": "Pedido creado exitosamente",
+                        "id_pedido": 501,
+                        "status": "success"
                     }
                 }
             }
-        },
-        503: {
-            "description": "No se pudo conectar a RabbitMQ"
         }
     }
 )
 def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
-    """Encola un pedido para procesamiento asíncrono.
-
-    El consumidor de RabbitMQ aplica validaciones de negocio y, si hay timeout
-    por servicios caídos, re-encola automáticamente hasta poder procesarlo.
-    """
-    try:
-        _publicar_pedido_encolado(p)
-        return {
-            "mensaje": "Pedido encolado exitosamente",
-            "status": "queued",
-            "nota": "Se procesará cuando todos los servicios estén disponibles",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"No se pudo encolar el pedido: {e}")
+    """Crea un pedido de forma síncrona (sin RabbitMQ)."""
+    if storage.postgres_enabled():
+        id_pedido = storage.create_pedido(p.id_cliente, p.id_producto, p.cantidad)
+    else:
+        pedidos = leer_pedidos()
+        id_pedido = max((int(item["id_pedido"]) for item in pedidos), default=500) + 1
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([id_pedido, p.id_cliente, p.id_producto, p.cantidad])
+    return {"mensaje": "Pedido creado exitosamente", "id_pedido": id_pedido, "status": "success"}
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan

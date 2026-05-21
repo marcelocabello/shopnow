@@ -15,40 +15,11 @@ from ui_pages import render_service_ui
 
 @asynccontextmanager
 async def lifespan(app):
-    """Maneja el startup y shutdown de la aplicación con RabbitMQ"""
-    try:
-        if storage.postgres_enabled():
-            storage.ensure_schema()
-            print("✓ Postgres habilitado para servicio de Productos")
-        import pika
-        print("▶ Conectando a RabbitMQ...")
-        mq_client.connect()
-        
-        # Declarar exchange
-        mq_client.declare_exchange('servicios', exchange_type='direct')
-        
-        # Declarar y vincular cola para solicitudes de validación
-        mq_client.declare_queue('productos_requests')
-        mq_client.bind_queue('productos_requests', 'servicios', ROUTING_KEYS['validate_producto'])
-        mq_client.bind_queue('productos_requests', 'servicios', 'productos.cmd.crear')
-        mq_client.bind_queue('productos_requests', 'servicios', 'productos.cmd.actualizar')
-        mq_client.bind_queue('productos_requests', 'servicios', 'productos.cmd.eliminar')
-        
-        # Iniciar consumidor en thread separado
-        mq_client.start_consumer_thread('productos_requests', handle_producto_message)
-        
-        print("✓ Servicio de Productos iniciado y escuchando en RabbitMQ")
-    except Exception as e:
-        print(f"⚠ Advertencia: Error al conectar a RabbitMQ en startup: {e}")
-        print("ℹ El servicio seguirá ejecutándose pero sin soporte de mensajería RabbitMQ")
-    
+    """Startup/shutdown sin dependencia de RabbitMQ."""
+    if storage.postgres_enabled():
+        storage.ensure_schema()
+        print("✓ Postgres habilitado para servicio de Productos")
     yield
-    
-    try:
-        mq_client.close()
-        print("✓ Servicio de Productos desconectado de RabbitMQ")
-    except Exception as e:
-        print(f"Error al desconectar de RabbitMQ: {e}")
 
 
 app = FastAPI(
@@ -68,6 +39,11 @@ app = FastAPI(
 @app.get("/ui", include_in_schema=False)
 def productos_ui():
     return render_service_ui("productos", "ShopNow Productos")
+
+
+@app.get("/", include_in_schema=False)
+def productos_home():
+    return {"servicio": "productos", "ui": "/ui", "docs": "/docs"}
 
 FILE_NAME = "productos.csv"
 HEADERS = ["id_producto", "descripcion", "precio", "activo", "categoria"]
@@ -167,20 +143,29 @@ def get_productos_v2(usuario: str = Depends(verificar_token)):
 
 @app.post("/v2/productos", tags=["Versionado"], summary="Registrar producto v2 — acepta categoria", status_code=202)
 def registrar_producto_v2(nuevo: ProductoRegistroV2, usuario: str = Depends(verificar_token)):
-    """Encola el alta de producto v2 para procesamiento asíncrono."""
-    _publicar_comando_producto(
-        RK_PRODUCTO_CREAR,
-        {
-            "descripcion": nuevo.descripcion,
-            "precio": nuevo.precio,
-            "activo": nuevo.activo,
-            "categoria": nuevo.categoria,
-        },
-    )
+    """Registra producto v2 de forma síncrona (sin RabbitMQ)."""
+    payload = {
+        "descripcion": nuevo.descripcion,
+        "precio": nuevo.precio,
+        "activo": nuevo.activo,
+        "categoria": nuevo.categoria,
+    }
+    if storage.postgres_enabled():
+        storage.create_producto(payload)
+    else:
+        productos = leer_productos()
+        siguiente_id = max((int(p["id_producto"]) for p in productos), default=0) + 1
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                siguiente_id,
+                payload["descripcion"],
+                payload["precio"],
+                payload["activo"],
+                payload["categoria"],
+            ])
     return {
-        "mensaje": "Producto v2 encolado exitosamente",
-        "status": "queued",
-        "nota": "Se procesará automáticamente por RabbitMQ",
+        "mensaje": "Producto v2 registrado exitosamente",
+        "status": "success",
     }
 
 @app.get(
@@ -263,16 +248,26 @@ def registrar_producto(nuevo: ProductoRegistro, usuario: str = Depends(verificar
         dict:
             Diccionario con mensaje de éxito e ID asignado del producto.
     """
-    _publicar_comando_producto(
-        RK_PRODUCTO_CREAR,
-        {
-            "descripcion": nuevo.descripcion,
-            "precio": nuevo.precio,
-            "activo": nuevo.activo,
-            "categoria": "",
-        },
-    )
-    return {"mensaje": "Producto encolado exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    payload = {
+        "descripcion": nuevo.descripcion,
+        "precio": nuevo.precio,
+        "activo": nuevo.activo,
+        "categoria": "",
+    }
+    if storage.postgres_enabled():
+        storage.create_producto(payload)
+    else:
+        productos = leer_productos()
+        siguiente_id = max((int(p["id_producto"]) for p in productos), default=0) + 1
+        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                siguiente_id,
+                payload["descripcion"],
+                payload["precio"],
+                payload["activo"],
+                payload["categoria"],
+            ])
+    return {"mensaje": "Producto registrado exitosamente", "status": "success"}
 
 @app.delete(
     "/productos/{id_producto}",
@@ -323,8 +318,23 @@ def eliminar_producto(id_producto: int, usuario: str = Depends(verificar_token))
         HTTPException:
             Con status 404 si el producto no existe.
     """
-    _publicar_comando_producto(RK_PRODUCTO_ELIMINAR, {"id_producto": id_producto})
-    return {"mensaje": "Solicitud de eliminación encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    if storage.postgres_enabled():
+        ok = storage.delete_producto(int(id_producto))
+    else:
+        productos = leer_productos()
+        producto = next((p for p in productos if int(p["id_producto"]) == int(id_producto)), None)
+        if producto:
+            productos.remove(producto)
+            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                writer.writeheader()
+                writer.writerows(productos)
+            ok = True
+        else:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    return {"mensaje": "Producto eliminado exitosamente", "status": "success"}
 
 @app.patch(
     "/productos/{id_producto}",
@@ -382,16 +392,31 @@ def actualizar_producto_parcial(id_producto: int, update: ProductoUpdate, usuari
         HTTPException:
             Con status 404 si el producto no existe.
     """
-    _publicar_comando_producto(
-        RK_PRODUCTO_ACTUALIZAR,
-        {
-            "id_producto": id_producto,
-            "descripcion": update.descripcion,
-            "precio": update.precio,
-            "activo": update.activo,
-        },
-    )
-    return {"mensaje": "Solicitud de actualización encolada exitosamente", "status": "queued", "nota": "Se procesará automáticamente por RabbitMQ"}
+    payload = {
+        "id_producto": id_producto,
+        "descripcion": update.descripcion,
+        "precio": update.precio,
+        "activo": update.activo,
+    }
+    if storage.postgres_enabled():
+        ok = storage.update_producto(int(id_producto), payload)
+    else:
+        productos = leer_productos()
+        producto = next((p for p in productos if int(p["id_producto"]) == int(id_producto)), None)
+        if producto:
+            for campo in ["descripcion", "precio", "activo"]:
+                if payload.get(campo) is not None:
+                    producto[campo] = payload.get(campo)
+            with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=HEADERS)
+                writer.writeheader()
+                writer.writerows(productos)
+            ok = True
+        else:
+            ok = False
+    if not ok:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    return {"mensaje": "Producto actualizado exitosamente", "status": "success"}
 
 
 # ============================================================================
