@@ -132,6 +132,20 @@ function cast(spec, value) {
   return value;
 }
 
+function pretty(value) {
+  if (value == null) return "";
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return JSON.stringify(parsed, null, 2);
+    } catch {
+      return value;
+    }
+  }
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value);
+}
+
 function readField(blockIndex, spec) {
   const safe = spec.replace(/[^a-zA-Z0-9_?]/g, "");
   const id = `b${blockIndex}_${safe}`;
@@ -161,7 +175,7 @@ function renderTable(rows) {
 
   const columns = Object.keys(rows[0]);
   const thead = `<thead class=\"bg-slate-900\"><tr>${columns.map((c) => `<th class=\"px-3 py-2 text-left text-xs font-bold uppercase tracking-wide text-sky-300\">${c}</th>`).join("")}</tr></thead>`;
-  const tbody = `<tbody>${rows.map((row) => `<tr class=\"border-t border-slate-700\">${columns.map((c) => `<td class=\"px-3 py-2 text-slate-200\">${String(row[c] ?? "")}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  const tbody = `<tbody>${rows.map((row) => `<tr class=\"border-t border-slate-700\">${columns.map((c) => `<td class=\"px-3 py-2 text-slate-200 whitespace-pre-wrap\">${pretty(row[c])}</td>`).join("")}</tr>`).join("")}</tbody>`;
   table.innerHTML = thead + tbody;
   document.getElementById("countBadge").textContent = String(rows.length);
 }
@@ -204,7 +218,7 @@ async function runBlock(index) {
     }
 
     const data = await api(path, b.method, b.method === "DELETE" ? null : body);
-    document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+    document.getElementById("output").textContent = pretty(data);
     loadList();
   } catch (e) {
     document.getElementById("output").textContent = e.message;
@@ -217,7 +231,7 @@ async function loadList() {
     const [method, path] = cfg[service].list;
     const data = await api(path, method);
     renderTable(data);
-    document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+    document.getElementById("output").textContent = pretty(data);
   } catch (e) {
     document.getElementById("output").textContent = e.message;
   }
