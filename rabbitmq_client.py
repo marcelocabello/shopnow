@@ -21,12 +21,13 @@ def create_rabbitmq_client(default_host: str = 'localhost', default_port: int = 
     port = int(os.getenv("RABBITMQ_PORT", str(default_port)))
     user = os.getenv("RABBITMQ_USER", "guest")
     password = os.getenv("RABBITMQ_PASSWORD", "guest")
-    return RabbitMQClient(host=host, port=port, user=user, password=password)
+    vhost = os.getenv("RABBITMQ_VHOST", "/")
+    return RabbitMQClient(host=host, port=port, user=user, password=password, vhost=vhost)
 
 class RabbitMQClient:
     """Client para comunicación entre servicios a través de RabbitMQ."""
     
-    def __init__(self, host='rabbitmq', port=5672, user='guest', password='guest'):
+    def __init__(self, host='rabbitmq', port=5672, user='guest', password='guest', vhost='/'):
         """
         Inicializa el cliente de RabbitMQ.
         
@@ -38,6 +39,7 @@ class RabbitMQClient:
         self.port = port
         self.user = user
         self.password = password
+        self.vhost = vhost
         self.connection: Optional[Any] = None
         self.channel: Optional[Any] = None
         self.reply_queue: Optional[str] = None
@@ -51,6 +53,7 @@ class RabbitMQClient:
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
+                virtual_host=self.vhost,
                 credentials=credentials,
                 connection_attempts=10,
                 retry_delay=1,
@@ -119,6 +122,7 @@ class RabbitMQClient:
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
+                virtual_host=self.vhost,
                 credentials=credentials,
                 connection_attempts=3,
                 retry_delay=0.5,
@@ -159,6 +163,7 @@ class RabbitMQClient:
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
+                virtual_host=self.vhost,
                 credentials=credentials,
                 connection_attempts=3,
                 retry_delay=0.5,
