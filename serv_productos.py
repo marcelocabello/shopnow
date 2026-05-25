@@ -79,15 +79,13 @@ class ProductoUpdate(BaseModel):
 class ProductoV2(BaseModel):
     id_producto: int
     descripcion: str
-    precio: float
+    costo_unitario: float
     activo: bool
-    categoria: str = ""
 
 class ProductoRegistroV2(BaseModel):
     descripcion: str = Field(..., min_length=3, example="Laptop Gamer") # type: ignore
-    precio: float = Field(..., gt=0, example=15000.0) # type: ignore
+    costo_unitario: float = Field(..., gt=0, example=15000.0) # type: ignore
     activo: bool = Field(default=True, example=True) # type: ignore
-    categoria: str = Field(default="", example="Electronico") # type: ignore
 
 def leer_productos():
     if storage.postgres_enabled():
@@ -127,29 +125,28 @@ def get_productos_v1(usuario: str = Depends(verificar_token)):
         for p in productos
     ]
 
-@app.get("/v2/productos", tags=["Versionado"], summary="Productos v2 — 5 campos (incluye categoria)")
+@app.get("/v2/productos", tags=["Versionado"], summary="Productos v2 — reemplaza precio por costo_unitario")
 def get_productos_v2(usuario: str = Depends(verificar_token)):
-    """Lista productos con 5 campos: todos los de v1 más categoria."""
+    """Lista productos v2 con contrato evolucionado: costo_unitario."""
     productos = leer_productos()
     return [
         {
             "id_producto": int(p["id_producto"]),
             "descripcion": p["descripcion"],
-            "precio": float(p["precio"]),
+            "costo_unitario": float(p["precio"]),
             "activo": str(p.get("activo", "True")).lower() in ("true", "1"),
-            "categoria": p.get("categoria", ""),
         }
         for p in productos
     ]
 
-@app.post("/v2/productos", tags=["Versionado"], summary="Registrar producto v2 — acepta categoria", status_code=202)
+@app.post("/v2/productos", tags=["Versionado"], summary="Registrar producto v2 — usa costo_unitario", status_code=202)
 def registrar_producto_v2(nuevo: ProductoRegistroV2, usuario: str = Depends(verificar_token)):
-    """Registra producto v2 de forma síncrona (sin RabbitMQ)."""
+    """Registra producto v2 mapeando costo_unitario al precio interno."""
     payload = {
         "descripcion": nuevo.descripcion,
-        "precio": nuevo.precio,
+        "precio": nuevo.costo_unitario,
         "activo": nuevo.activo,
-        "categoria": nuevo.categoria,
+        "categoria": "",
     }
     if storage.postgres_enabled():
         storage.create_producto(payload)
@@ -162,7 +159,7 @@ def registrar_producto_v2(nuevo: ProductoRegistroV2, usuario: str = Depends(veri
                 payload["descripcion"],
                 payload["precio"],
                 payload["activo"],
-                payload["categoria"],
+                "",
             ])
     return {
         "mensaje": "Producto v2 registrado exitosamente",

@@ -14,12 +14,28 @@ from ui_pages import render_service_ui
 
 @asynccontextmanager
 async def lifespan(app):
-    """Startup/shutdown sin dependencia de RabbitMQ."""
+    """Startup/shutdown de Inventario con consumidor RabbitMQ."""
     if storage.postgres_enabled():
         storage.ensure_schema()
         storage.seed_demo_data_if_enabled()
         print("✓ Postgres habilitado para servicio de Inventario")
+    try:
+        mq_client.connect()
+        mq_client.declare_exchange("servicios", "direct")
+        mq_client.declare_queue("inventario_requests")
+        mq_client.bind_queue("inventario_requests", "servicios", ROUTING_KEYS["get_inventario"])
+        mq_client.bind_queue("inventario_requests", "servicios", ROUTING_KEYS["descontar_inventario"])
+        mq_client.bind_queue("inventario_requests", "servicios", RK_INVENTARIO_AGREGAR)
+        mq_client.bind_queue("inventario_requests", "servicios", RK_INVENTARIO_DESCONTAR)
+        mq_client.start_consumer_thread("inventario_requests", handle_inventario_message)
+        print("✓ Consumidor RabbitMQ de Inventario activo")
+    except Exception as exc:
+        print(f"⚠ Inventario sin consumidor RabbitMQ: {exc}")
     yield
+    try:
+        mq_client.close()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -56,7 +72,6 @@ if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
 # Cliente RabbitMQ global
 mq_client = create_rabbitmq_client()
 
-RK_INVENTARIO_REGISTRAR = 'inventario.cmd.registrar'
 RK_INVENTARIO_AGREGAR = 'inventario.cmd.agregar'
 RK_INVENTARIO_DESCONTAR = 'inventario.cmd.descontar'
 
@@ -169,57 +184,27 @@ def consultar_stock(id_producto: int, usuario: str = Depends(verificar_token)):
 @app.post(
     "/inventario",
     tags=["Operaciones"],
-    summary="Registrar nuevo producto en inventario",
-    status_code=202,
+    summary="Operación no permitida: alta de productos",
+    status_code=405,
     responses={
-        201: {
-            "description": "Producto registrado en inventario exitosamente",
+        405: {
+            "description": "Inventario no da de alta productos",
             "content": {
                 "application/json": {
                     "example": {
-                        "mensaje": "Producto registrado en inventario",
-                        "id_producto": 1,
-                        "cantidad": 100,
-                        "status": "success"
+                        "detail": "Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar o /inventario/descontar."
                     }
                 }
             }
-        },
-        422: {
-            "description": "Datos de entrada inválidos o formato incorrecto"
         }
     }
 )
 def registrar_inventario(mov: MovimientoInventario, usuario: str = Depends(verificar_token)):
-    """Registra un nuevo producto en el inventario.
-    
-    Crea un nuevo registro de inventario para un producto específico con
-    la cantidad inicial de existencias.
-    
-    Args:
-        mov (MovimientoInventario): Datos del movimiento de inventario.
-            - id_producto: ID del producto a registrar
-            - cantidad: Cantidad inicial de existencias (debe ser mayor a 0)
-    
-    Returns:
-        dict: Diccionario con confirmación del registro y datos del producto.
-    
-    Raises:
-        HTTPException: Con status 400 si el producto ya existe en inventario.
-    """
-    if storage.postgres_enabled():
-        ok = storage.registrar_inventario(mov.id_producto, mov.cantidad)
-    else:
-        items = leer_inventario()
-        if any(int(i["id_producto"]) == mov.id_producto for i in items):
-            ok = False
-        else:
-            with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-                csv.writer(f).writerow([mov.id_producto, mov.cantidad])
-            ok = True
-    if not ok:
-        raise HTTPException(status_code=400, detail="Producto ya registrado en inventario")
-    return {"mensaje": "Producto registrado en inventario", "status": "success"}
+    """Bloquea altas de producto en inventario por política de negocio."""
+    raise HTTPException(
+        status_code=405,
+        detail="Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar o /inventario/descontar.",
+    )
 
 @app.post(
     "/inventario/descontar",
@@ -415,17 +400,6 @@ def handle_inventario_message(ch, method, properties, body):
 
                 if not exito and not response:
                     response = {'exito': False, 'error': 'Producto no encontrado', 'id_producto': id_producto}
-
-        elif routing_key == RK_INVENTARIO_REGISTRAR:
-            id_producto = int(message.get('id_producto'))
-            cantidad = int(message.get('cantidad'))
-            if storage.postgres_enabled():
-                storage.registrar_inventario(id_producto, cantidad)
-            else:
-                items = leer_inventario()
-                if not any(int(item['id_producto']) == id_producto for item in items):
-                    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-                        csv.writer(f).writerow([id_producto, cantidad])
 
         elif routing_key == RK_INVENTARIO_DESCONTAR:
             id_producto = int(message.get('id_producto'))

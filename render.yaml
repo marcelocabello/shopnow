@@ -21,6 +21,14 @@ services:
         fromDatabase:
           name: shopnow-postgres
           property: connectionString
+      - key: RABBITMQ_HOST
+        value: beaver.rmq.cloudamqp.com
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        value: dbyjxysd
+      - key: RABBITMQ_PASSWORD
+        value: ArQa8_E5tvktqoEjYLidEorEDPwEjBfT
 
   - type: web
     name: shopnow-productos
@@ -37,6 +45,14 @@ services:
         fromDatabase:
           name: shopnow-postgres
           property: connectionString
+      - key: RABBITMQ_HOST
+        value: beaver.rmq.cloudamqp.com
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        value: dbyjxysd
+      - key: RABBITMQ_PASSWORD
+        value: ArQa8_E5tvktqoEjYLidEorEDPwEjBfT
 
   - type: web
     name: shopnow-pedidos
@@ -53,6 +69,24 @@ services:
         fromDatabase:
           name: shopnow-postgres
           property: connectionString
+      - key: RABBITMQ_HOST
+        value: beaver.rmq.cloudamqp.com
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        value: dbyjxysd
+      - key: RABBITMQ_PASSWORD
+        value: ArQa8_E5tvktqoEjYLidEorEDPwEjBfT
+      - key: CLIENTES_URL
+        value: https://shopnow-clientes-nlyo.onrender.com
+      - key: PRODUCTOS_URL
+        value: https://shopnow-productos-b175.onrender.com
+      - key: INVENTARIO_URL
+        value: https://shopnow-inventario-u5ua.onrender.com
+      - key: SERVICE_AUTH_USER
+        value: admin
+      - key: SERVICE_AUTH_PASSWORD
+        value: admin123
 
   - type: web
     name: shopnow-inventario
@@ -69,6 +103,14 @@ services:
         fromDatabase:
           name: shopnow-postgres
           property: connectionString
+      - key: RABBITMQ_HOST
+        value: beaver.rmq.cloudamqp.com
+      - key: RABBITMQ_PORT
+        value: "5672"
+      - key: RABBITMQ_USER
+        value: dbyjxysd
+      - key: RABBITMQ_PASSWORD
+        value: ArQa8_E5tvktqoEjYLidEorEDPwEjBfT
 
   - type: web
     name: shopnow-gateway
@@ -78,10 +120,10 @@ services:
     startCommand: uvicorn gateway:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: CLIENTES_URL
-        value: https://shopnow-clientes.onrender.com
+        value: https://shopnow-clientes-nlyo.onrender.com
       - key: PRODUCTOS_URL
-        value: https://shopnow-productos.onrender.com
+        value: https://shopnow-productos-b175.onrender.com
       - key: PEDIDOS_URL
-        value: https://shopnow-pedidos.onrender.com
+        value: https://shopnow-pedidos-dnq3.onrender.com
       - key: INVENTARIO_URL
-        value: https://shopnow-inventario.onrender.com
+        value: https://shopnow-inventario-u5ua.onrender.com

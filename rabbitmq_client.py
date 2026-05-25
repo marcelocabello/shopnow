@@ -19,12 +19,14 @@ def create_rabbitmq_client(default_host: str = 'localhost', default_port: int = 
     """Crea un cliente RabbitMQ configurable por variables de entorno."""
     host = os.getenv("RABBITMQ_HOST", default_host)
     port = int(os.getenv("RABBITMQ_PORT", str(default_port)))
-    return RabbitMQClient(host=host, port=port)
+    user = os.getenv("RABBITMQ_USER", "guest")
+    password = os.getenv("RABBITMQ_PASSWORD", "guest")
+    return RabbitMQClient(host=host, port=port, user=user, password=password)
 
 class RabbitMQClient:
     """Client para comunicación entre servicios a través de RabbitMQ."""
     
-    def __init__(self, host='rabbitmq', port=5672):
+    def __init__(self, host='rabbitmq', port=5672, user='guest', password='guest'):
         """
         Inicializa el cliente de RabbitMQ.
         
@@ -34,6 +36,8 @@ class RabbitMQClient:
         """
         self.host = host
         self.port = port
+        self.user = user
+        self.password = password
         self.connection: Optional[Any] = None
         self.channel: Optional[Any] = None
         self.reply_queue: Optional[str] = None
@@ -43,7 +47,7 @@ class RabbitMQClient:
     def connect(self):
         """Establece conexión con RabbitMQ."""
         try:
-            credentials = PlainCredentials('guest', 'guest')
+            credentials = PlainCredentials(self.user, self.password)
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
@@ -111,7 +115,7 @@ class RabbitMQClient:
         """
         publish_connection = None
         try:
-            credentials = PlainCredentials('guest', 'guest')
+            credentials = PlainCredentials(self.user, self.password)
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,
@@ -151,7 +155,7 @@ class RabbitMQClient:
         rr_connection = None
         try:
             # Crear una conexión completamente separada para request-reply
-            credentials = PlainCredentials('guest', 'guest')
+            credentials = PlainCredentials(self.user, self.password)
             parameters = ConnectionParameters(
                 host=self.host,
                 port=self.port,

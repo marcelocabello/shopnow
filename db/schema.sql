@@ -34,4 +34,83 @@ CREATE TABLE IF NOT EXISTS pedidos (
 CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos (id_cliente);
 CREATE INDEX IF NOT EXISTS idx_pedidos_producto ON pedidos (id_producto);
 
+CREATE OR REPLACE FUNCTION sp_validar_stock(
+    p_id_producto INTEGER,
+    p_cantidad INTEGER
+)
+RETURNS TABLE(existe_producto BOOLEAN, stock_actual INTEGER, stock_suficiente BOOLEAN)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_stock INTEGER;
+BEGIN
+    SELECT i.cantidad
+    INTO v_stock
+    FROM inventario i
+    WHERE i.id_producto = p_id_producto;
+
+    IF v_stock IS NULL THEN
+        RETURN QUERY SELECT FALSE, 0, FALSE;
+        RETURN;
+    END IF;
+
+    RETURN QUERY
+    SELECT TRUE, v_stock, (v_stock >= p_cantidad);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION sp_descontar_inventario(
+    p_id_producto INTEGER,
+    p_cantidad INTEGER
+)
+RETURNS TABLE(exito BOOLEAN, nueva_cantidad INTEGER, error TEXT)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_stock INTEGER;
+BEGIN
+    SELECT i.cantidad
+    INTO v_stock
+    FROM inventario i
+    WHERE i.id_producto = p_id_producto
+    FOR UPDATE;
+
+    IF v_stock IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::INTEGER, 'Producto no encontrado';
+        RETURN;
+    END IF;
+
+    IF v_stock < p_cantidad THEN
+        RETURN QUERY SELECT FALSE, v_stock, 'Stock insuficiente';
+        RETURN;
+    END IF;
+
+    UPDATE inventario
+    SET cantidad = cantidad - p_cantidad
+    WHERE id_producto = p_id_producto
+    RETURNING cantidad INTO v_stock;
+
+    RETURN QUERY SELECT TRUE, v_stock, NULL::TEXT;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION sp_crear_pedido(
+    p_id_cliente INTEGER,
+    p_id_producto INTEGER,
+    p_cantidad INTEGER
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_id_pedido INTEGER;
+BEGIN
+    INSERT INTO pedidos (id_cliente, id_producto, cantidad)
+    VALUES (p_id_cliente, p_id_producto, p_cantidad)
+    RETURNING id_pedido INTO v_id_pedido;
+
+    RETURN v_id_pedido;
+END;
+$$;
+
 COMMIT;

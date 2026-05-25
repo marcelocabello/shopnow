@@ -367,27 +367,25 @@ def agregar_inventario(id_producto: int, cantidad: int) -> bool:
 
 
 def descontar_inventario(id_producto: int, cantidad: int) -> dict[str, Any]:
-    item = get_inventario_item(id_producto)
-    if item is None:
-        return {"exito": False, "error": "Producto no encontrado", "id_producto": id_producto}
-
-    stock_actual = int(item["cantidad"])
-    if stock_actual < cantidad:
-        return {"exito": False, "error": "Stock insuficiente", "id_producto": id_producto}
-
     row = _fetch_one(
         """
-        UPDATE inventario
-        SET cantidad = cantidad - %s
-        WHERE id_producto = %s
-        RETURNING cantidad
+        SELECT exito, nueva_cantidad, error
+        FROM sp_descontar_inventario(%s, %s)
         """,
-        (cantidad, id_producto),
+        (id_producto, cantidad),
     )
+    if not row:
+        return {"exito": False, "error": "Error inesperado en procedimiento", "id_producto": id_producto}
+    if not bool(row["exito"]):
+        return {
+            "exito": False,
+            "error": row.get("error") or "No fue posible descontar inventario",
+            "id_producto": id_producto,
+        }
     return {
         "exito": True,
         "id_producto": id_producto,
-        "nueva_cantidad": int(row["cantidad"]),
+        "nueva_cantidad": int(row["nueva_cantidad"]),
     }
 
 
@@ -404,13 +402,25 @@ def read_pedidos() -> list[dict[str, Any]]:
 def create_pedido(id_cliente: int, id_producto: int, cantidad: int) -> int:
     row = _fetch_one(
         """
-        INSERT INTO pedidos (id_pedido, id_cliente, id_producto, cantidad)
-        VALUES (
-            (SELECT COALESCE(MAX(id_pedido), 500) + 1 FROM pedidos),
-            %s, %s, %s
-        )
-        RETURNING id_pedido
+        SELECT sp_crear_pedido(%s, %s, %s) AS id_pedido
         """,
         (id_cliente, id_producto, cantidad),
     )
     return int(row["id_pedido"])
+
+
+def validar_stock(id_producto: int, cantidad: int) -> dict[str, Any]:
+    row = _fetch_one(
+        """
+        SELECT existe_producto, stock_actual, stock_suficiente
+        FROM sp_validar_stock(%s, %s)
+        """,
+        (id_producto, cantidad),
+    )
+    if not row:
+        return {"existe_producto": False, "stock_actual": 0, "stock_suficiente": False}
+    return {
+        "existe_producto": bool(row["existe_producto"]),
+        "stock_actual": int(row["stock_actual"] or 0),
+        "stock_suficiente": bool(row["stock_suficiente"]),
+    }

@@ -2,6 +2,7 @@ import csv
 import os
 import json
 import pika
+from urllib import request, parse, error
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordRequestForm
@@ -18,7 +19,7 @@ STARTUP_ERROR: str | None = None
 
 @asynccontextmanager
 async def lifespan(app):
-    """Startup/shutdown sin dependencia de RabbitMQ."""
+    """Startup/shutdown de Pedidos con Postgres + consumidor RabbitMQ."""
     global STARTUP_ERROR
     if storage.postgres_enabled():
         try:
@@ -29,7 +30,20 @@ async def lifespan(app):
         except Exception as exc:
             STARTUP_ERROR = str(exc)
             print(f"⚠ Pedidos inició en modo degradado: {STARTUP_ERROR}")
+    try:
+        mq_client.connect()
+        mq_client.declare_exchange("servicios", "direct")
+        mq_client.declare_queue("pedidos_requests")
+        mq_client.bind_queue("pedidos_requests", "servicios", ROUTING_KEYS["crear_pedido"])
+        mq_client.start_consumer_thread("pedidos_requests", handle_pedido_message)
+        print("✓ Consumidor RabbitMQ de Pedidos activo")
+    except Exception as exc:
+        print(f"⚠ Pedidos sin consumidor RabbitMQ: {exc}")
     yield
+    try:
+        mq_client.close()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -65,6 +79,11 @@ if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
 
 # Cliente RabbitMQ global
 mq_client = create_rabbitmq_client()
+CLIENTES_URL = os.getenv("CLIENTES_URL", "http://127.0.0.1:8010").rstrip("/")
+PRODUCTOS_URL = os.getenv("PRODUCTOS_URL", "http://127.0.0.1:8001").rstrip("/")
+INVENTARIO_URL = os.getenv("INVENTARIO_URL", "http://127.0.0.1:8003").rstrip("/")
+SERVICE_USER = os.getenv("SERVICE_AUTH_USER", "admin")
+SERVICE_PASSWORD = os.getenv("SERVICE_AUTH_PASSWORD", "admin123")
 
 class Pedido(BaseModel):
     id_pedido: int = Field(..., example=501)  # type: ignore
@@ -95,49 +114,12 @@ def leer_pedidos():
 # ============================================================================
 
 def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
-    """Lógica de negocio compartida entre endpoint síncrono y consumidor async.
+    """Lógica de negocio para consumidor async.
     
     Returns: dict con id_pedido generado
     Raises: HTTPException si falla validación de negocio (no reencolar)
     Raises: RuntimeError si hay timeout de servicio (sí reencolar)
     """
-    # Validar producto
-    resp = mq_client.request_reply(
-        exchange='servicios',
-        routing_key=ROUTING_KEYS['validate_producto'],
-        message={'id_producto': id_producto}
-    )
-    if resp is None:
-        raise RuntimeError("Timeout servicio productos")
-    if not resp.get('existe'):
-        raise HTTPException(status_code=400, detail="Producto no existe en el catálogo")
-
-    # Verificar inventario
-    resp = mq_client.request_reply(
-        exchange='servicios',
-        routing_key=ROUTING_KEYS['get_inventario'],
-        message={'id_producto': id_producto}
-    )
-    if resp is None:
-        raise RuntimeError("Timeout servicio inventario")
-    stock = resp.get('cantidad', 0)
-    if stock <= 0:
-        raise HTTPException(status_code=400, detail="Producto sin registro de inventario")
-    if cantidad > stock:
-        raise HTTPException(status_code=400, detail="Inventario insuficiente para completar el pedido")
-
-    # Validar cliente
-    resp = mq_client.request_reply(
-        exchange='servicios',
-        routing_key=ROUTING_KEYS['validate_cliente'],
-        message={'id_cliente': id_cliente}
-    )
-    if resp is None:
-        raise RuntimeError("Timeout servicio clientes")
-    if not resp.get('existe'):
-        raise HTTPException(status_code=400, detail="El cliente no existe en el padrón oficial")
-
-    # Descontar inventario
     resp = mq_client.request_reply(
         exchange='servicios',
         routing_key=ROUTING_KEYS['descontar_inventario'],
@@ -158,6 +140,71 @@ def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
         csv.writer(f).writerow([siguiente_id, id_cliente, id_producto, cantidad])
 
     return siguiente_id
+
+
+def _http_json(url: str, method: str = "GET", body: dict | None = None, headers: dict | None = None):
+    data = None
+    req_headers = {"Accept": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        req_headers["Content-Type"] = "application/json"
+    req = request.Request(url=url, data=data, method=method, headers=req_headers)
+    with request.urlopen(req, timeout=12) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _service_token(base_url: str) -> str:
+    form = parse.urlencode(
+        {
+            "username": SERVICE_USER,
+            "password": SERVICE_PASSWORD,
+            "grant_type": "password",
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        url=f"{base_url}/token",
+        data=form,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    with request.urlopen(req, timeout=12) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        token = data.get("access_token")
+        if not token:
+            raise HTTPException(status_code=503, detail=f"Token inválido de servicio en {base_url}")
+        return token
+
+
+def _auth_headers(base_url: str) -> dict:
+    return {"Authorization": f"Bearer {_service_token(base_url)}"}
+
+
+def _validar_dependencias_rest(id_cliente: int, id_producto: int, cantidad: int):
+    try:
+        token_clientes = _auth_headers(CLIENTES_URL)
+        token_productos = _auth_headers(PRODUCTOS_URL)
+        token_inventario = _auth_headers(INVENTARIO_URL)
+
+        _http_json(f"{CLIENTES_URL}/clientes/{id_cliente}", headers=token_clientes)
+        _http_json(f"{PRODUCTOS_URL}/productos/{id_producto}", headers=token_productos)
+        stock_info = _http_json(f"{INVENTARIO_URL}/inventario/{id_producto}", headers=token_inventario)
+    except error.HTTPError as exc:
+        if exc.code == 404:
+            raise HTTPException(status_code=400, detail="Validación fallida: cliente/producto/inventario no encontrado") from exc
+        if exc.code in (401, 403):
+            raise HTTPException(status_code=503, detail="Error de autenticación entre servicios") from exc
+        if exc.code == 503:
+            raise HTTPException(status_code=503, detail="Un departamento está temporalmente no disponible") from exc
+        raise HTTPException(status_code=503, detail=f"Error HTTP de dependencia: {exc.code}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"No se pudo validar dependencias REST: {exc}") from exc
+
+    stock = int(stock_info.get("cantidad", 0))
+    if stock <= 0 or cantidad > stock:
+        raise HTTPException(status_code=400, detail="Inventario insuficiente para completar el pedido")
 
 
 def handle_pedido_message(ch, method, properties, body):
@@ -255,16 +302,16 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
     "/pedidos",
     tags=["Operaciones"],
     summary="Crear nuevo pedido",
-    status_code=201,
+    status_code=202,
     responses={
-        201: {
-            "description": "Pedido creado exitosamente",
+        202: {
+            "description": "Pedido encolado exitosamente",
             "content": {
                 "application/json": {
                     "example": {
-                        "mensaje": "Pedido creado exitosamente",
-                        "id_pedido": 501,
-                        "status": "success"
+                        "mensaje": "Pedido encolado exitosamente",
+                        "status": "queued",
+                        "nota": "Se procesará en segundo plano vía RabbitMQ"
                     }
                 }
             }
@@ -272,20 +319,22 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
     }
 )
 def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
-    """Crea un pedido de forma síncrona (sin RabbitMQ)."""
+    """Orquesta validaciones REST y encola pedido para procesamiento async."""
     if STARTUP_ERROR:
         raise HTTPException(
             status_code=503,
             detail=f"Servicio temporalmente no disponible: {STARTUP_ERROR}",
         )
-    if storage.postgres_enabled():
-        id_pedido = storage.create_pedido(p.id_cliente, p.id_producto, p.cantidad)
-    else:
-        pedidos = leer_pedidos()
-        id_pedido = max((int(item["id_pedido"]) for item in pedidos), default=500) + 1
-        with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([id_pedido, p.id_cliente, p.id_producto, p.cantidad])
-    return {"mensaje": "Pedido creado exitosamente", "id_pedido": id_pedido, "status": "success"}
+    _validar_dependencias_rest(p.id_cliente, p.id_producto, p.cantidad)
+    try:
+        _publicar_pedido_encolado(p)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"No se pudo encolar el pedido: {exc}") from exc
+    return {
+        "mensaje": "Pedido encolado exitosamente",
+        "status": "queued",
+        "nota": "Se procesará en segundo plano vía RabbitMQ",
+    }
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan
