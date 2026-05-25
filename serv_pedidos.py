@@ -11,15 +11,23 @@ from rabbitmq_client import ROUTING_KEYS, create_rabbitmq_client
 from auth import verificar_token, endpoint_login, Token
 import storage
 from ui_pages import render_service_ui
-from ui_pages import render_service_ui
+
+
+STARTUP_ERROR: str | None = None
 
 
 @asynccontextmanager
 async def lifespan(app):
     """Startup/shutdown sin dependencia de RabbitMQ."""
+    global STARTUP_ERROR
     if storage.postgres_enabled():
-        storage.ensure_schema()
-        print("✓ Postgres habilitado para servicio de Pedidos")
+        try:
+            storage.ensure_schema()
+            STARTUP_ERROR = None
+            print("✓ Postgres habilitado para servicio de Pedidos")
+        except Exception as exc:
+            STARTUP_ERROR = str(exc)
+            print(f"⚠ Pedidos inició en modo degradado: {STARTUP_ERROR}")
     yield
 
 
@@ -70,6 +78,11 @@ class PedidoRegistro(BaseModel):
 
 def leer_pedidos():
     """Lee todos los pedidos del archivo CSV."""
+    if STARTUP_ERROR:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Servicio temporalmente no disponible: {STARTUP_ERROR}",
+        )
     if storage.postgres_enabled():
         return storage.read_pedidos()
     with open(FILE_NAME, "r", encoding="utf-8") as f:
@@ -259,6 +272,11 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
 )
 def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
     """Crea un pedido de forma síncrona (sin RabbitMQ)."""
+    if STARTUP_ERROR:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Servicio temporalmente no disponible: {STARTUP_ERROR}",
+        )
     if storage.postgres_enabled():
         id_pedido = storage.create_pedido(p.id_cliente, p.id_producto, p.cantidad)
     else:
