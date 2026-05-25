@@ -23,6 +23,7 @@ async def lifespan(app):
     if storage.postgres_enabled():
         try:
             storage.ensure_schema()
+            storage.seed_demo_data_if_enabled()
             STARTUP_ERROR = None
             print("✓ Postgres habilitado para servicio de Pedidos")
         except Exception as exc:

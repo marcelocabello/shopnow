@@ -71,6 +71,98 @@ def ensure_schema() -> None:
             cur.execute("SELECT pg_advisory_unlock(663001)")
 
 
+def seed_demo_data_if_enabled() -> None:
+    """Inserta datos demo cuando SHOPNOW_SEED_DEMO=true y las tablas estan vacias."""
+    if os.getenv("SHOPNOW_SEED_DEMO", "false").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    if not postgres_enabled():
+        return
+
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(663002)")
+            try:
+                cur.execute("SELECT COUNT(*) FROM clientes")
+                clientes_count = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM productos")
+                productos_count = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM inventario")
+                inventario_count = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM pedidos")
+                pedidos_count = int(cur.fetchone()[0])
+
+                # Clientes
+                if clientes_count == 0:
+                    for i in range(1, 21):
+                        cur.execute(
+                            """
+                            INSERT INTO clientes (nombre, correo, direccion, telefono, activo, rfc, fecha_registro)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                f"Cliente Demo {i:02d}",
+                                f"cliente.demo{i:02d}@shopnow.test",
+                                f"Calle Demo #{100+i}, Queretaro",
+                                f"{4420000000 + i:010d}",
+                                True,
+                                f"DEMO{i:02d}0101AAA",
+                                "2026-05-25",
+                            ),
+                        )
+
+                # Productos
+                if productos_count == 0:
+                    for i in range(1, 21):
+                        cur.execute(
+                            """
+                            INSERT INTO productos (descripcion, precio, activo, categoria)
+                            VALUES (%s, %s, %s, %s)
+                            """,
+                            (
+                                f"Producto Demo {i:02d}",
+                                float(50 + i * 7),
+                                True,
+                                "Demo",
+                            ),
+                        )
+
+                # Inventario (20 registros sobre los primeros 20 productos)
+                if inventario_count == 0:
+                    cur.execute("SELECT id_producto FROM productos ORDER BY id_producto LIMIT 20")
+                    product_rows = cur.fetchall()
+                    for idx, (product_id,) in enumerate(product_rows, start=1):
+                        cur.execute(
+                            """
+                            INSERT INTO inventario (id_producto, cantidad)
+                            VALUES (%s, %s)
+                            ON CONFLICT (id_producto) DO UPDATE SET cantidad = EXCLUDED.cantidad
+                            """,
+                            (int(product_id), 10 + idx),
+                        )
+
+                # Pedidos
+                if pedidos_count == 0:
+                    cur.execute("SELECT id_cliente FROM clientes ORDER BY id_cliente LIMIT 20")
+                    client_rows = [int(row[0]) for row in cur.fetchall()]
+                    cur.execute("SELECT id_producto FROM productos ORDER BY id_producto LIMIT 20")
+                    product_rows = [int(row[0]) for row in cur.fetchall()]
+                    if client_rows and product_rows:
+                        for i in range(20):
+                            cur.execute(
+                                """
+                                INSERT INTO pedidos (id_cliente, id_producto, cantidad)
+                                VALUES (%s, %s, %s)
+                                """,
+                                (
+                                    client_rows[i % len(client_rows)],
+                                    product_rows[i % len(product_rows)],
+                                    (i % 5) + 1,
+                                ),
+                            )
+            finally:
+                cur.execute("SELECT pg_advisory_unlock(663002)")
+
+
 def _fetch_all(query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     with _connect() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:

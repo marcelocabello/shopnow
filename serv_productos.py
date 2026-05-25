@@ -18,6 +18,7 @@ async def lifespan(app):
     """Startup/shutdown sin dependencia de RabbitMQ."""
     if storage.postgres_enabled():
         storage.ensure_schema()
+        storage.seed_demo_data_if_enabled()
         print("✓ Postgres habilitado para servicio de Productos")
     yield
 
