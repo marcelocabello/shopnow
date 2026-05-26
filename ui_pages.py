@@ -19,6 +19,7 @@ def render_service_ui(service: str, title: str) -> HTMLResponse:
     <header class="glass mb-6 rounded-3xl border border-slate-700/80 p-6">
       <h1 class="text-3xl font-black tracking-tight md:text-4xl">__TITLE__ Workspace</h1>
       <p class="mt-2 text-slate-300">Panel visual del servicio <b>__SERVICE__</b> con autenticación y operaciones.</p>
+      <p class="mt-1 text-sm text-slate-400">Vista centralizada recomendada: <a class="text-cyan-300 underline" href="https://shopnow-gateway.onrender.com/ui" target="_blank" rel="noopener">https://shopnow-gateway.onrender.com/ui</a></p>
     </header>
 
     <div class="grid gap-6 lg:grid-cols-[280px_1fr]">
@@ -35,6 +36,10 @@ def render_service_ui(service: str, title: str) -> HTMLResponse:
         <div class="space-y-2 text-sm">
           <p class="text-slate-300">Estado: <span id="stateBadge" class="rounded-full bg-slate-700 px-2 py-1 text-xs">sin sesion</span></p>
           <p class="text-slate-300">Registros: <span id="countBadge" class="font-bold text-amber-300">0</span></p>
+        </div>
+        <div class="mt-3 rounded-xl border border-slate-700 bg-slate-900 p-2">
+          <p class="text-xs uppercase tracking-wide text-amber-300">Token beta</p>
+          <pre id="tokenBox" class="mt-1 max-h-28 overflow-auto text-[11px] leading-4 text-slate-300">(sin token)</pre>
         </div>
       </aside>
 
@@ -190,6 +195,7 @@ async function login() {
     const data = await api("/token", "POST", form);
     token = data.access_token;
     document.getElementById("authMsg").textContent = "Sesion iniciada";
+    document.getElementById("tokenBox").textContent = token || "(sin token)";
     document.getElementById("stateBadge").textContent = "autenticado";
     document.getElementById("stateBadge").className = "rounded-full bg-emerald-700/50 px-2 py-1 text-xs";
     loadList();
