@@ -25,7 +25,6 @@ const SERVICES = {
     listPath: "/inventario",
     createPath: "/inventario",
     addPath: "/inventario/agregar",
-    discountPath: "/inventario/descontar",
   },
 };
 
@@ -270,7 +269,7 @@ function ClientesPanel({ token }) {
 function ProductosPanel({ token }) {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
-  const [form, setForm] = useState({ descripcion: "", precio: "", activo: true });
+  const [form, setForm] = useState({ descripcion: "", precio: "", activo: true, stock_inicial: 0 });
   const [patch, setPatch] = useState({ id: "", descripcion: "", precio: "", activo: true });
   const [deleteId, setDeleteId] = useState("");
 
@@ -290,7 +289,7 @@ function ProductosPanel({ token }) {
       const r = await apiFetch(`/productos${SERVICES.productos.createPath}`, {
         method: "POST",
         token,
-        body: { ...form, precio: Number(form.precio) },
+        body: { ...form, precio: Number(form.precio), stock_inicial: Number(form.stock_inicial || 0) },
       });
       setMsg(r.mensaje || "Solicitud enviada");
       load();
@@ -324,6 +323,7 @@ function ProductosPanel({ token }) {
         <div className="grid gap-2 md:grid-cols-2">
           <Input label="Descripcion" value={form.descripcion} onChange={(e) => setForm({ ...form, descripcion: e.target.value })} />
           <Input label="Precio" type="number" value={form.precio} onChange={(e) => setForm({ ...form, precio: e.target.value })} />
+          <Input label="Stock inicial" type="number" value={form.stock_inicial} onChange={(e) => setForm({ ...form, stock_inicial: e.target.value })} />
           <Switch label="Activo" checked={form.activo} onChange={(v) => setForm({ ...form, activo: v })} />
         </div>
         <button className="mt-3 rounded-lg bg-aqua px-4 py-2 text-sm font-semibold text-slate-950" onClick={create}>Guardar</button>
@@ -351,7 +351,7 @@ function ProductosPanel({ token }) {
 function PedidosPanel({ token }) {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
-  const [form, setForm] = useState({ id_cliente: "", id_producto: "", cantidad: "" });
+  const [form, setForm] = useState({ id_cliente: "", id_producto: "", cantidad: "", descuento_pct: "0" });
 
   const load = async () => {
     try { setRows(await apiFetch(`/pedidos${SERVICES.pedidos.listPath}`, { token })); }
@@ -373,6 +373,7 @@ function PedidosPanel({ token }) {
           id_cliente: Number(form.id_cliente),
           id_producto: Number(form.id_producto),
           cantidad: Number(form.cantidad),
+          descuento_pct: Number(form.descuento_pct || 0),
         },
       });
       setMsg(r.mensaje || "Pedido enviado");
@@ -385,10 +386,11 @@ function PedidosPanel({ token }) {
       <button className="rounded-lg bg-sky px-4 py-2 text-sm font-bold text-slate-950" onClick={load}>Refrescar</button>
       {msg && <p className="text-sm text-amber-300">{msg}</p>}
       <Card title="Crear Pedido">
-        <div className="grid gap-2 md:grid-cols-3">
+        <div className="grid gap-2 md:grid-cols-4">
           <Input label="ID cliente" type="number" value={form.id_cliente} onChange={(e) => setForm({ ...form, id_cliente: e.target.value })} />
           <Input label="ID producto" type="number" value={form.id_producto} onChange={(e) => setForm({ ...form, id_producto: e.target.value })} />
           <Input label="Cantidad" type="number" value={form.cantidad} onChange={(e) => setForm({ ...form, cantidad: e.target.value })} />
+          <Input label="Descuento %" type="number" value={form.descuento_pct} onChange={(e) => setForm({ ...form, descuento_pct: e.target.value })} />
         </div>
         <button className="mt-3 rounded-lg bg-aqua px-4 py-2 text-sm font-semibold text-slate-950" onClick={create}>Enviar pedido</button>
       </Card>
@@ -401,7 +403,6 @@ function InventarioPanel({ token }) {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
   const [plus, setPlus] = useState({ id_producto: "", cantidad: "" });
-  const [minus, setMinus] = useState({ id_producto: "", cantidad: "" });
 
   const load = async () => {
     try { setRows(await apiFetch(`/inventario${SERVICES.inventario.listPath}`, { token })); }
@@ -425,7 +426,7 @@ function InventarioPanel({ token }) {
   return (
     <div className="space-y-4">
       <button className="rounded-lg bg-sky px-4 py-2 text-sm font-bold text-slate-950" onClick={load}>Refrescar</button>
-      <p className="text-sm text-slate-300">Inventario no da de alta productos. Primero crea en Productos y aqui solo agrega o descuenta stock.</p>
+      <p className="text-sm text-slate-300">Inventario no da de alta productos y no descuenta manualmente. Aqui solo se agrega cantidad; el descuento lo hace Pedidos.</p>
       {msg && <p className="text-sm text-amber-300">{msg}</p>}
       <Card title="Agregar Stock">
         <div className="grid gap-2 md:grid-cols-2">
@@ -433,13 +434,6 @@ function InventarioPanel({ token }) {
           <Input label="Cantidad a agregar" type="number" value={plus.cantidad} onChange={(e) => setPlus({ ...plus, cantidad: e.target.value })} />
         </div>
         <button className="mt-3 rounded-lg bg-sky px-4 py-2 text-sm font-semibold text-slate-950" onClick={() => call(SERVICES.inventario.addPath, { id_producto: Number(plus.id_producto), cantidad: Number(plus.cantidad) })}>Agregar</button>
-      </Card>
-      <Card title="Descontar Stock">
-        <div className="grid gap-2 md:grid-cols-2">
-          <Input label="ID producto" type="number" value={minus.id_producto} onChange={(e) => setMinus({ ...minus, id_producto: e.target.value })} />
-          <Input label="Cantidad a descontar" type="number" value={minus.cantidad} onChange={(e) => setMinus({ ...minus, cantidad: e.target.value })} />
-        </div>
-        <button className="mt-3 rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white" onClick={() => call(SERVICES.inventario.discountPath, { id_producto: Number(minus.id_producto), cantidad: Number(minus.cantidad) })}>Descontar</button>
       </Card>
       <Card title="Inventario Actual"><DataTable rows={rows} /></Card>
     </div>

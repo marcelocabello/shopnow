@@ -70,6 +70,7 @@ class ProductoRegistro(BaseModel):
     descripcion: str = Field(..., min_length=3, example="Laptop Gamer") # type: ignore
     precio: float = Field(..., gt=0, example=15000.0) # type: ignore
     activo: bool = Field(default=True, example=True) # type: ignore
+    stock_inicial: int = Field(default=0, ge=0, example=0) # type: ignore
 
 class ProductoUpdate(BaseModel):
     descripcion: Optional[str] = Field(None, min_length=3, example="Laptop Gamer") # type: ignore
@@ -251,6 +252,7 @@ def registrar_producto(nuevo: ProductoRegistro, usuario: str = Depends(verificar
         "precio": nuevo.precio,
         "activo": nuevo.activo,
         "categoria": "",
+        "stock_inicial": nuevo.stock_inicial,
     }
     if storage.postgres_enabled():
         storage.create_producto(payload)

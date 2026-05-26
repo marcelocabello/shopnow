@@ -81,6 +81,10 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS categoria VARCHAR(100)")
                 cur.execute("UPDATE productos SET categoria = 'General' WHERE categoria IS NULL")
                 cur.execute("ALTER TABLE productos ALTER COLUMN categoria SET DEFAULT 'General'")
+                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS descuento_pct NUMERIC(5,2) NOT NULL DEFAULT 0")
+                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS precio_unitario NUMERIC(10,2) NOT NULL DEFAULT 0")
+                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS total NUMERIC(12,2) NOT NULL DEFAULT 0")
+                cur.execute("ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS fecha_pedido TIMESTAMP NOT NULL DEFAULT NOW()")
             except Exception:
                 conn.rollback()
                 cur.execute("SELECT pg_advisory_lock(663001)")
@@ -439,7 +443,9 @@ def create_producto(payload: dict[str, Any]) -> int:
                 payload.get("activo", True),
             ),
         )
-    return int(row["id_producto"])
+    id_producto = int(row["id_producto"])
+    registrar_inventario(id_producto, int(payload.get("stock_inicial", 0) or 0))
+    return id_producto
 
 
 def update_producto(id_producto: int, payload: dict[str, Any]) -> bool:
@@ -554,22 +560,56 @@ def descontar_inventario(id_producto: int, cantidad: int) -> dict[str, Any]:
 
 
 def read_pedidos() -> list[dict[str, Any]]:
-    return _fetch_all(
-        """
-        SELECT id_pedido, id_cliente, id_producto, cantidad
+    cols = _table_columns("pedidos")
+    has_descuento = "descuento_pct" in cols
+    has_precio = "precio_unitario" in cols
+    has_total = "total" in cols
+    has_fecha = "fecha_pedido" in cols
+    descuento_select = "descuento_pct" if has_descuento else "0::numeric AS descuento_pct"
+    precio_select = "precio_unitario" if has_precio else "0::numeric AS precio_unitario"
+    total_select = "total" if has_total else "0::numeric AS total"
+    fecha_select = "fecha_pedido" if has_fecha else "NOW()::timestamp AS fecha_pedido"
+    rows = _fetch_all(
+        f"""
+        SELECT id_pedido, id_cliente, id_producto, cantidad, {descuento_select}, {precio_select}, {total_select}, {fecha_select}
         FROM pedidos
         ORDER BY id_pedido
         """
     )
+    for row in rows:
+        row["descuento_pct"] = float(row.get("descuento_pct") or 0)
+        row["precio_unitario"] = float(row.get("precio_unitario") or 0)
+        row["total"] = float(row.get("total") or 0)
+        if row.get("fecha_pedido") is not None and hasattr(row["fecha_pedido"], "isoformat"):
+            row["fecha_pedido"] = row["fecha_pedido"].isoformat()
+    return rows
 
 
-def create_pedido(id_cliente: int, id_producto: int, cantidad: int) -> int:
-    row = _fetch_one(
-        """
-        SELECT sp_crear_pedido(%s, %s, %s) AS id_pedido
-        """,
-        (id_cliente, id_producto, cantidad),
-    )
+def create_pedido(
+    id_cliente: int,
+    id_producto: int,
+    cantidad: int,
+    precio_unitario: float = 0,
+    descuento_pct: float = 0,
+    total: float = 0,
+) -> int:
+    cols = _table_columns("pedidos")
+    if {"descuento_pct", "precio_unitario", "total", "fecha_pedido"}.issubset(cols):
+        row = _fetch_one(
+            """
+            INSERT INTO pedidos (id_cliente, id_producto, cantidad, descuento_pct, precio_unitario, total, fecha_pedido)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            RETURNING id_pedido
+            """,
+            (id_cliente, id_producto, cantidad, descuento_pct, precio_unitario, total),
+        )
+    else:
+        row = _fetch_one(
+            """
+            SELECT sp_crear_pedido(%s, %s, %s) AS id_pedido
+            """,
+            (id_cliente, id_producto, cantidad),
+        )
     return int(row["id_pedido"])
 
 

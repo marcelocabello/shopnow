@@ -192,7 +192,7 @@ def consultar_stock(id_producto: int, usuario: str = Depends(verificar_token)):
             "content": {
                 "application/json": {
                     "example": {
-                        "detail": "Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar o /inventario/descontar."
+                        "detail": "Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar."
                     }
                 }
             }
@@ -203,73 +203,33 @@ def registrar_inventario(mov: MovimientoInventario, usuario: str = Depends(verif
     """Bloquea altas de producto en inventario por política de negocio."""
     raise HTTPException(
         status_code=405,
-        detail="Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar o /inventario/descontar.",
+        detail="Inventario no permite altas de productos. Da de alta en /productos y luego ajusta cantidades con /inventario/agregar.",
     )
 
 @app.post(
     "/inventario/descontar",
     tags=["Operaciones"],
-    summary="Descontar stock de inventario",
-    status_code=202,
+    summary="Operación no permitida: descuento directo",
+    status_code=405,
     responses={
-        200: {
-            "description": "Stock descontado exitosamente",
+        405: {
+            "description": "Inventario no permite descuento manual",
             "content": {
                 "application/json": {
                     "example": {
-                        "mensaje": "Descuento de inventario aplicado exitosamente",
-                        "status": "success"
+                        "detail": "Inventario no permite descuento manual. El descuento de existencias se realiza desde /pedidos."
                     }
                 }
             }
-        },
-        400: {
-            "description": "Stock insuficiente en almacén"
-        },
-        404: {
-            "description": "Producto no encontrado en inventario"
         }
     }
 )
 def descontar_stock(mov: MovimientoInventario, usuario: str = Depends(verificar_token)):
-    """Descuenta stock del inventario tras una venta exitosa.
-    
-    Reduce la cantidad disponible de un producto en el inventario.
-    Se utiliza cuando se completa exitosamente un pedido.
-    
-    Args:
-        mov (MovimientoInventario): Datos del movimiento de descuento.
-            - id_producto: ID del producto a descontar
-            - cantidad: Cantidad a descontar (debe ser mayor a 0)
-    
-    Returns:
-        dict: Diccionario con confirmación de la operación.
-    
-    Raises:
-        HTTPException: Con status 400 si stock es insuficiente.
-        HTTPException: Con status 404 si el producto no existe en inventario.
-    """
-    if storage.postgres_enabled():
-        result = storage.descontar_inventario(mov.id_producto, mov.cantidad)
-    else:
-        items = leer_inventario()
-        item = next((i for i in items if int(i["id_producto"]) == mov.id_producto), None)
-        if not item:
-            raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
-        stock = int(item["cantidad"])
-        if stock < mov.cantidad:
-            raise HTTPException(status_code=400, detail="Stock insuficiente")
-        item["cantidad"] = stock - mov.cantidad
-        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=HEADERS)
-            writer.writeheader()
-            writer.writerows(items)
-        result = {"exito": True, "nueva_cantidad": int(item["cantidad"])}
-    if not result.get("exito"):
-        if result.get("error") == "Producto no encontrado":
-            raise HTTPException(status_code=404, detail="Producto no registrado en inventario")
-        raise HTTPException(status_code=400, detail=result.get("error", "No se pudo descontar stock"))
-    return {"mensaje": "Descuento de inventario aplicado exitosamente", "status": "success"}
+    """Bloquea descuentos manuales de inventario por política de negocio."""
+    raise HTTPException(
+        status_code=405,
+        detail="Inventario no permite descuento manual. El descuento de existencias se realiza desde /pedidos.",
+    )
 
 @app.post(
     "/inventario/agregar",

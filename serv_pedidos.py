@@ -2,6 +2,7 @@ import csv
 import os
 import json
 import pika
+from datetime import datetime
 from urllib import request, parse, error
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
@@ -71,7 +72,7 @@ def pedidos_home():
 
 
 FILE_NAME = "pedidos.csv"
-HEADERS = ["id_pedido", "id_cliente", "id_producto", "cantidad"]
+HEADERS = ["id_pedido", "id_cliente", "id_producto", "cantidad", "descuento_pct", "precio_unitario", "total", "fecha_pedido"]
 
 if not storage.postgres_enabled() and not os.path.exists(FILE_NAME):
     with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
@@ -90,11 +91,16 @@ class Pedido(BaseModel):
     id_cliente: int = Field(..., example=101) # type: ignore
     id_producto: int = Field(..., example=1) # type: ignore
     cantidad: int = Field(..., gt=0, example=2) # type: ignore
+    descuento_pct: float = Field(default=0, ge=0, le=100, example=10) # type: ignore
+    precio_unitario: float = Field(..., ge=0, example=1500.0) # type: ignore
+    total: float = Field(..., ge=0, example=2700.0) # type: ignore
+    fecha_pedido: str = Field(..., example="2026-05-26T19:48:00") # type: ignore
 
 class PedidoRegistro(BaseModel):
     id_cliente: int = Field(..., example=101) # type: ignore
     id_producto: int = Field(..., example=1) # type: ignore
     cantidad: int = Field(..., gt=0, example=2) # type: ignore
+    descuento_pct: float = Field(default=0, ge=0, le=100, example=10) # type: ignore
 
 def leer_pedidos():
     """Lee todos los pedidos del archivo CSV."""
@@ -113,7 +119,7 @@ def leer_pedidos():
 # CONSUMIDOR ASYNC DE PEDIDOS (maneja mensajes encolados vía RabbitMQ)
 # ============================================================================
 
-def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
+def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int, precio_unitario: float, descuento_pct: float):
     """Lógica de negocio para consumidor async.
     
     Returns: dict con id_pedido generado
@@ -131,13 +137,23 @@ def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int):
         raise HTTPException(status_code=503, detail="Error al descontar inventario")
 
     # Persistir pedido
+    subtotal = float(precio_unitario) * int(cantidad)
+    total = round(subtotal * (1 - (float(descuento_pct) / 100.0)), 2)
     if storage.postgres_enabled():
-        return storage.create_pedido(id_cliente, id_producto, cantidad)
+        return storage.create_pedido(
+            id_cliente=id_cliente,
+            id_producto=id_producto,
+            cantidad=cantidad,
+            precio_unitario=float(precio_unitario),
+            descuento_pct=float(descuento_pct),
+            total=total,
+        )
 
     pedidos = leer_pedidos()
     siguiente_id = max((int(p['id_pedido']) for p in pedidos), default=500) + 1
+    fecha_pedido = datetime.now().isoformat(timespec="seconds")
     with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerow([siguiente_id, id_cliente, id_producto, cantidad])
+        csv.writer(f).writerow([siguiente_id, id_cliente, id_producto, cantidad, descuento_pct, precio_unitario, total, fecha_pedido])
 
     return siguiente_id
 
@@ -182,6 +198,14 @@ def _auth_headers(base_url: str) -> dict:
     return {"Authorization": f"Bearer {_service_token(base_url)}"}
 
 
+def _obtener_precio_producto(id_producto: int, token_productos: dict) -> float:
+    productos = _http_json(f"{PRODUCTOS_URL}/productos", headers=token_productos)
+    producto = next((p for p in productos if int(p.get("id_producto", 0)) == int(id_producto)), None)
+    if not producto:
+        raise HTTPException(status_code=400, detail="Validación fallida: producto no encontrado")
+    return float(producto.get("precio", 0))
+
+
 def _validar_dependencias_rest(id_cliente: int, id_producto: int, cantidad: int):
     try:
         token_clientes = _auth_headers(CLIENTES_URL)
@@ -189,7 +213,7 @@ def _validar_dependencias_rest(id_cliente: int, id_producto: int, cantidad: int)
         token_inventario = _auth_headers(INVENTARIO_URL)
 
         _http_json(f"{CLIENTES_URL}/clientes/{id_cliente}", headers=token_clientes)
-        _http_json(f"{PRODUCTOS_URL}/productos/{id_producto}", headers=token_productos)
+        precio_unitario = _obtener_precio_producto(id_producto, token_productos)
         stock_info = _http_json(f"{INVENTARIO_URL}/inventario/{id_producto}", headers=token_inventario)
     except error.HTTPError as exc:
         if exc.code == 404:
@@ -205,6 +229,7 @@ def _validar_dependencias_rest(id_cliente: int, id_producto: int, cantidad: int)
     stock = int(stock_info.get("cantidad", 0))
     if stock <= 0 or cantidad > stock:
         raise HTTPException(status_code=400, detail="Inventario insuficiente para completar el pedido")
+    return precio_unitario
 
 
 def handle_pedido_message(ch, method, properties, body):
@@ -220,8 +245,10 @@ def handle_pedido_message(ch, method, properties, body):
         id_cliente = message['id_cliente']
         id_producto = message['id_producto']
         cantidad = message['cantidad']
+        precio_unitario = float(message.get('precio_unitario', 0))
+        descuento_pct = float(message.get('descuento_pct', 0))
 
-        id_pedido = _procesar_pedido_data(id_cliente, id_producto, cantidad)
+        id_pedido = _procesar_pedido_data(id_cliente, id_producto, cantidad, precio_unitario, descuento_pct)
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"✓ Pedido {id_pedido} procesado y guardado desde cola")
@@ -241,7 +268,7 @@ def handle_pedido_message(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
-def _publicar_pedido_encolado(p: PedidoRegistro):
+def _publicar_pedido_encolado(p: PedidoRegistro, precio_unitario: float):
     """Publica un pedido en RabbitMQ para procesamiento asíncrono."""
     mq_client.publish(
         exchange='servicios',
@@ -250,6 +277,8 @@ def _publicar_pedido_encolado(p: PedidoRegistro):
             "id_cliente": p.id_cliente,
             "id_producto": p.id_producto,
             "cantidad": p.cantidad,
+            "descuento_pct": p.descuento_pct,
+            "precio_unitario": float(precio_unitario),
         },
     )
 
@@ -325,9 +354,9 @@ def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
             status_code=503,
             detail=f"Servicio temporalmente no disponible: {STARTUP_ERROR}",
         )
-    _validar_dependencias_rest(p.id_cliente, p.id_producto, p.cantidad)
+    precio_unitario = _validar_dependencias_rest(p.id_cliente, p.id_producto, p.cantidad)
     try:
-        _publicar_pedido_encolado(p)
+        _publicar_pedido_encolado(p, precio_unitario)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"No se pudo encolar el pedido: {exc}") from exc
     return {
