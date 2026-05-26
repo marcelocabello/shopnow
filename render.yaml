@@ -20,7 +20,7 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
+        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
       - key: POSTGRES_SSLMODE
         value: require
       - key: RABBITMQ_HOST
@@ -54,7 +54,7 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
+        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
       - key: POSTGRES_SSLMODE
         value: require
       - key: RABBITMQ_HOST
@@ -88,7 +88,7 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
+        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
       - key: POSTGRES_SSLMODE
         value: require
       - key: RABBITMQ_HOST
@@ -132,7 +132,7 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
+        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
       - key: POSTGRES_SSLMODE
         value: require
       - key: RABBITMQ_HOST

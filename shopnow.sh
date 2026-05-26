@@ -15,12 +15,17 @@ MAGENTA='\033[0;35m'
 WHITE='\033[1;37m'
 NC='\033[0m'  # No Color
 
-DB_HOST="127.0.0.1"
-DB_PORT="5433"
-DB_NAME="shopnow_663n"
-DB_USER="shopnow_663n_user"
-DB_PASSWORD="shopnow_local_123"
-DB_ENV="SHOPNOW_STORAGE=postgres POSTGRES_HOST=$DB_HOST POSTGRES_PORT=$DB_PORT POSTGRES_DB=$DB_NAME POSTGRES_USER=$DB_USER POSTGRES_PASSWORD=$DB_PASSWORD"
+DB_HOST="${POSTGRES_HOST:-127.0.0.1}"
+DB_PORT="${POSTGRES_PORT:-5433}"
+DB_NAME="${POSTGRES_DB:-shopnow_663n}"
+DB_USER="${POSTGRES_USER:-shopnow_663n_user}"
+DB_PASSWORD="${POSTGRES_PASSWORD:-shopnow_local_123}"
+DB_SSLMODE="${POSTGRES_SSLMODE:-prefer}"
+DB_ENV="SHOPNOW_STORAGE=postgres POSTGRES_HOST=$DB_HOST POSTGRES_PORT=$DB_PORT POSTGRES_DB=$DB_NAME POSTGRES_USER=$DB_USER POSTGRES_PASSWORD=$DB_PASSWORD POSTGRES_SSLMODE=$DB_SSLMODE"
+USE_LOCAL_POSTGRES=true
+if [ "$DB_HOST" != "127.0.0.1" ] && [ "$DB_HOST" != "localhost" ]; then
+    USE_LOCAL_POSTGRES=false
+fi
 
 SERVICE_CLIENTES_CMD="$DB_ENV uvicorn serv_clientes:app --port 8010 --reload"
 SERVICE_PRODUCTOS_CMD="$DB_ENV uvicorn serv_productos:app --port 8001 --reload"
@@ -286,13 +291,18 @@ iniciar_servicios() {
         return 1
     fi
 
-    if ! bootstrap_postgres; then
-        echo -e "  ${RED}✗ No fue posible preparar Postgres en Docker. Abortando arranque.${NC}"
-        return 1
-    fi
+    if [ "$USE_LOCAL_POSTGRES" = true ]; then
+        if ! bootstrap_postgres; then
+            echo -e "  ${RED}✗ No fue posible preparar Postgres en Docker. Abortando arranque.${NC}"
+            return 1
+        fi
 
-    echo -e "${YELLOW}▶ Esperando que Postgres esté disponible...${NC}"
-    sleep 6
+        echo -e "${YELLOW}▶ Esperando que Postgres esté disponible...${NC}"
+        sleep 6
+    else
+        echo -e "${CYAN}ℹ Usando Postgres remoto: ${DB_HOST}:${DB_PORT} (sslmode=${DB_SSLMODE})${NC}"
+        sleep 1
+    fi
     echo ""
 
     # Iniciar Clientes

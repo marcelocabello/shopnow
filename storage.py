@@ -15,6 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 DEFAULT_DB = "shopnow_663n"
 DEFAULT_USER = "shopnow_663n_user"
+DEFAULT_SSLMODE = os.getenv("POSTGRES_SSLMODE", "prefer")
 
 
 def postgres_enabled() -> bool:
@@ -35,7 +36,7 @@ def _postgres_settings() -> dict[str, Any]:
                 "dbname": (parsed.path or "").lstrip("/") or DEFAULT_DB,
                 "user": unquote(parsed.username or DEFAULT_USER),
                 "password": unquote(parsed.password or ""),
-                "sslmode": os.getenv("POSTGRES_SSLMODE", "require"),
+                "sslmode": DEFAULT_SSLMODE,
             }
 
     return {
@@ -44,6 +45,7 @@ def _postgres_settings() -> dict[str, Any]:
         "dbname": os.getenv("POSTGRES_DB", DEFAULT_DB),
         "user": os.getenv("POSTGRES_USER", DEFAULT_USER),
         "password": os.getenv("POSTGRES_PASSWORD", ""),
+        "sslmode": DEFAULT_SSLMODE,
     }
 
 
