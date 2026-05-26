@@ -134,7 +134,13 @@ def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int, prec
     if resp is None:
         raise RuntimeError("Timeout al descontar inventario")
     if not resp.get('exito'):
-        raise HTTPException(status_code=503, detail="Error al descontar inventario")
+        detalle = str(resp.get("error") or "Error al descontar inventario")
+        detalle_l = detalle.lower()
+        # Errores de negocio: no reencolar.
+        if "stock insuficiente" in detalle_l or "producto no encontrado" in detalle_l:
+            raise HTTPException(status_code=400, detail=detalle)
+        # Errores internos/transitorios: sí reencolar.
+        raise HTTPException(status_code=503, detail=detalle)
 
     # Persistir pedido
     subtotal = float(precio_unitario) * int(cantidad)
@@ -265,9 +271,13 @@ def handle_pedido_message(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     except HTTPException as e:
-        # Error de negocio - rechazar definitivamente
-        print(f"✗ Pedido inválido, rechazando (sin requeue): {e.detail}")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        # 5xx/transitorio -> requeue; 4xx/negocio -> rechazo definitivo
+        if int(getattr(e, "status_code", 500)) >= 500:
+            print(f"⚠ Error transitorio procesando pedido ({e.detail}). Reencolando...")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        else:
+            print(f"✗ Pedido inválido, rechazando (sin requeue): {e.detail}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     except Exception as e:
         print(f"✗ Error inesperado procesando pedido: {e}")
