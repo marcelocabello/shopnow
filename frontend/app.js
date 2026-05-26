@@ -29,7 +29,8 @@ const SERVICES = {
   },
 };
 
-const MAIN_TABS = ["clientes", "productos", "pedidos", "inventario"];
+const MAIN_TABS = ["general", "clientes", "productos", "pedidos", "inventario"];
+const AUTO_REFRESH_MS = 4000;
 
 async function apiFetch(path, { method = "GET", token, body, form = false } = {}) {
   const headers = {};
@@ -118,6 +119,10 @@ function LoginPanel({ service, token, onLogin, onLogout }) {
       {token ? (
         <div className="space-y-2">
           <p className="text-sm text-emerald-300">Sesion activa.</p>
+          <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-2">
+            <p className="text-xs font-semibold text-amber-300">Token (beta):</p>
+            <p className="break-all text-xs text-slate-300">{token}</p>
+          </div>
           <button className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white" onClick={() => onLogout(service)}>
             Cerrar sesion
           </button>
@@ -183,6 +188,11 @@ function ClientesPanel({ token }) {
   };
 
   useEffect(() => { if (token) load(); }, [token]);
+  useEffect(() => {
+    if (!token) return undefined;
+    const id = setInterval(load, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [token]);
 
   const create = async () => {
     setMsg("");
@@ -268,6 +278,11 @@ function ProductosPanel({ token }) {
     catch (e) { setMsg(e.message); }
   };
   useEffect(() => { if (token) load(); }, [token]);
+  useEffect(() => {
+    if (!token) return undefined;
+    const id = setInterval(load, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [token]);
 
   const create = async () => {
     try {
@@ -342,6 +357,11 @@ function PedidosPanel({ token }) {
     catch (e) { setMsg(e.message); }
   };
   useEffect(() => { if (token) load(); }, [token]);
+  useEffect(() => {
+    if (!token) return undefined;
+    const id = setInterval(load, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [token]);
 
   const create = async () => {
     try {
@@ -388,6 +408,11 @@ function InventarioPanel({ token }) {
     catch (e) { setMsg(e.message); }
   };
   useEffect(() => { if (token) load(); }, [token]);
+  useEffect(() => {
+    if (!token) return undefined;
+    const id = setInterval(load, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [token]);
 
   const call = async (path, payload) => {
     try {
@@ -427,6 +452,86 @@ function InventarioPanel({ token }) {
   );
 }
 
+function GeneralPanel({ tokens }) {
+  const [data, setData] = useState({
+    clientes: [],
+    productos: [],
+    pedidos: [],
+    inventario: [],
+  });
+  const [msg, setMsg] = useState("");
+
+  const loadAll = async () => {
+    try {
+      const next = {
+        clientes: [],
+        productos: [],
+        pedidos: [],
+        inventario: [],
+      };
+      const jobs = [];
+      if (tokens.clientes) {
+        jobs.push(
+          apiFetch(`/clientes${SERVICES.clientes.listPath}`, { token: tokens.clientes }).then((rows) => {
+            next.clientes = rows;
+          })
+        );
+      }
+      if (tokens.productos) {
+        jobs.push(
+          apiFetch(`/productos${SERVICES.productos.listPath}`, { token: tokens.productos }).then((rows) => {
+            next.productos = rows;
+          })
+        );
+      }
+      if (tokens.pedidos) {
+        jobs.push(
+          apiFetch(`/pedidos${SERVICES.pedidos.listPath}`, { token: tokens.pedidos }).then((rows) => {
+            next.pedidos = rows;
+          })
+        );
+      }
+      if (tokens.inventario) {
+        jobs.push(
+          apiFetch(`/inventario${SERVICES.inventario.listPath}`, { token: tokens.inventario }).then((rows) => {
+            next.inventario = rows;
+          })
+        );
+      }
+      await Promise.all(jobs);
+      setData(next);
+      setMsg("");
+    } catch (e) {
+      setMsg(e.message);
+    }
+  };
+
+  useEffect(() => {
+    loadAll();
+  }, [tokens.clientes, tokens.productos, tokens.pedidos, tokens.inventario]);
+
+  useEffect(() => {
+    const hasToken = tokens.clientes || tokens.productos || tokens.pedidos || tokens.inventario;
+    if (!hasToken) return undefined;
+    const id = setInterval(loadAll, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [tokens.clientes, tokens.productos, tokens.pedidos, tokens.inventario]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <button className="rounded-lg bg-sky px-4 py-2 text-sm font-bold text-slate-950" onClick={loadAll}>Refrescar todo</button>
+        <p className="text-xs text-slate-300">Auto-refresco cada {AUTO_REFRESH_MS / 1000}s</p>
+      </div>
+      {msg && <p className="text-sm text-amber-300">{msg}</p>}
+      <Card title="Clientes"><DataTable rows={data.clientes} /></Card>
+      <Card title="Productos"><DataTable rows={data.productos} /></Card>
+      <Card title="Pedidos"><DataTable rows={data.pedidos} /></Card>
+      <Card title="Inventario"><DataTable rows={data.inventario} /></Card>
+    </div>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState("clientes");
   const [tokens, setTokens] = useState(() => {
@@ -442,6 +547,7 @@ function App() {
   const clearToken = (service) => setTokens((t) => ({ ...t, [service]: "" }));
 
   const content = useMemo(() => {
+    if (tab === "general") return <GeneralPanel tokens={tokens} />;
     if (!tokens[tab]) return <p className="rounded-xl bg-slate-800 p-4 text-slate-300">Inicia sesion en {SERVICES[tab].label} para usar su panel.</p>;
     if (tab === "clientes") return <ClientesPanel token={tokens.clientes} />;
     if (tab === "productos") return <ProductosPanel token={tokens.productos} />;
@@ -476,7 +582,7 @@ function App() {
               onClick={() => setTab(service)}
               className={`rounded-xl px-4 py-2 text-sm font-bold transition ${tab === service ? "bg-aqua text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700"}`}
             >
-              {SERVICES[service].label}
+              {service === "general" ? "Vista general" : SERVICES[service].label}
             </button>
           ))}
         </section>
