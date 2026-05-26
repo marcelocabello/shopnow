@@ -310,17 +310,15 @@ def handle_inventario_message(ch, method, properties, body):
     - descontar_inventario: Descuenta stock tras una compra (request-reply)
     - inventario.cmd.*: Comandos asíncronos de escritura
     """
+    message = {}
+    reply_to = properties.reply_to if properties else None
+    correlation_id = properties.correlation_id if properties else None
+    routing_key = method.routing_key
+    response = None
     try:
         message = json.loads(body)
         print(f"📨 Mensaje recibido en Inventario: {message}")
-        
-        # Obtener la información de respuesta
-        reply_to = properties.reply_to if properties else None
-        correlation_id = properties.correlation_id if properties else None
-        routing_key = method.routing_key
-        
-        response = None
-        
+
         # Procesar según la routing key
         if routing_key == ROUTING_KEYS['get_inventario']:
             # Consultar stock
@@ -332,7 +330,7 @@ def handle_inventario_message(ch, method, properties, body):
                     break
             if not response:
                 response = {'id_producto': id_producto, 'cantidad': 0, 'error': 'Producto no en inventario'}
-        
+
         elif routing_key == ROUTING_KEYS['descontar_inventario']:
             # Descontar inventario
             id_producto = message.get('id_producto')
@@ -405,7 +403,7 @@ def handle_inventario_message(ch, method, properties, body):
                         break
                 if not actualizado:
                     raise ValueError(f"Producto {id_producto} no encontrado en inventario")
-        
+
         # Enviar respuesta solo para operaciones request-reply
         if reply_to and correlation_id and response is not None:
             mq_client.channel.basic_publish(
@@ -416,13 +414,31 @@ def handle_inventario_message(ch, method, properties, body):
                     correlation_id=correlation_id
                 )
             )
-        
+
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"✓ Operación de inventario procesada para routing_key={routing_key}")
-        
+
     except Exception as e:
+        # Evita el ciclo infinito de requeue en request-reply:
+        # siempre responde error al caller y ACK del mensaje.
         print(f"Error procesando mensaje de inventario: {e}")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        if reply_to and correlation_id:
+            fallback_id_producto = message.get('id_producto') if isinstance(message, dict) else None
+            error_response = {
+                "exito": False,
+                "error": f"Error interno inventario: {e}",
+                "id_producto": fallback_id_producto,
+            }
+            try:
+                mq_client.channel.basic_publish(
+                    exchange='',
+                    routing_key=reply_to,
+                    body=json.dumps(error_response),
+                    properties=pika.BasicProperties(correlation_id=correlation_id),
+                )
+            except Exception as pub_exc:
+                print(f"Error enviando respuesta fallback de inventario: {pub_exc}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
 # Las funciones de startup y shutdown ahora están en el contexto lifespan
