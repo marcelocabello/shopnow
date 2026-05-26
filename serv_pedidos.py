@@ -206,13 +206,19 @@ def _obtener_precio_producto(id_producto: int, token_productos: dict) -> float:
     return float(producto.get("precio", 0))
 
 
+def _cliente_existe(id_cliente: int, token_clientes: dict) -> bool:
+    clientes = _http_json(f"{CLIENTES_URL}/clientes", headers=token_clientes)
+    return any(int(c.get("id_cliente", 0)) == int(id_cliente) for c in clientes)
+
+
 def _validar_dependencias_rest(id_cliente: int, id_producto: int, cantidad: int):
     try:
         token_clientes = _auth_headers(CLIENTES_URL)
         token_productos = _auth_headers(PRODUCTOS_URL)
         token_inventario = _auth_headers(INVENTARIO_URL)
 
-        _http_json(f"{CLIENTES_URL}/clientes/{id_cliente}", headers=token_clientes)
+        if not _cliente_existe(id_cliente, token_clientes):
+            raise HTTPException(status_code=400, detail="Validación fallida: cliente no encontrado")
         precio_unitario = _obtener_precio_producto(id_producto, token_productos)
         stock_info = _http_json(f"{INVENTARIO_URL}/inventario/{id_producto}", headers=token_inventario)
     except error.HTTPError as exc:
