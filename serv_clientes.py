@@ -66,9 +66,9 @@ RK_CLIENTE_INACTIVAR = 'clientes.cmd.inactivar'
 class Cliente(BaseModel):
     id_cliente: int = Field(..., example=101, description="ID numérico único") # type: ignore
     nombre: str = Field(..., min_length=3, example="Juan Pérez") # type: ignore
-    correo: EmailStr = Field(..., example="juan@ejemplo.com") # type: ignore
+    correo: str = Field(..., example="juan@ejemplo.com") # type: ignore
     direccion: str = Field(..., example="Calle 123") # type: ignore
-    telefono: str = Field(..., min_length=10, max_length=10, example="4421234567") # type: ignore
+    telefono: str = Field(..., example="4421234567") # type: ignore
     activo: bool = Field(..., example=True) # type: ignore
 
 class ClienteRegistro(BaseModel):
@@ -231,7 +231,18 @@ def obtener_clientes(usuario: str = Depends(verificar_token)):
     Returns:
         List[Cliente]: Lista de clientes con todos sus datos.
     """
-    return leer_clientes()
+    clientes = leer_clientes()
+    return [
+        {
+            "id_cliente": int(c.get("id_cliente", 0)),
+            "nombre": str(c.get("nombre", "") or ""),
+            "correo": str(c.get("correo", "") or ""),
+            "direccion": str(c.get("direccion", "") or ""),
+            "telefono": str(c.get("telefono", "") or ""),
+            "activo": str(c.get("activo", "True")).lower() in ("true", "1", "t", "yes", "y"),
+        }
+        for c in clientes
+    ]
 
 @app.post(
     "/clientes",
