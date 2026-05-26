@@ -30,6 +30,7 @@ const SERVICES = {
 };
 
 const MAIN_TABS = ["general", "clientes", "productos", "pedidos", "inventario"];
+const SERVICE_TABS = ["clientes", "productos", "pedidos", "inventario"];
 const AUTO_REFRESH_MS = 4000;
 
 async function apiFetch(path, { method = "GET", token, body, form = false } = {}) {
@@ -564,7 +565,7 @@ function App() {
         </header>
 
         <section className="mb-6 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {MAIN_TABS.map((service) => (
+          {SERVICE_TABS.map((service) => (
             <LoginPanel
               key={service}
               service={service}
