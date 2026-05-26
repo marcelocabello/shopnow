@@ -20,9 +20,11 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
+        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
       - key: POSTGRES_SSLMODE
         value: require
+      - key: DATABASE_URL
+        value: postgresql://shopnow_663n_user:mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl@dpg-d7ohmhpj2pic73abp6l0-a.oregon-postgres.render.com:5432/shopnow_663n?sslmode=require
       - key: RABBITMQ_HOST
         value: beaver.rmq.cloudamqp.com
       - key: RABBITMQ_PORT
@@ -54,9 +56,11 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
+        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
       - key: POSTGRES_SSLMODE
         value: require
+      - key: DATABASE_URL
+        value: postgresql://shopnow_663n_user:mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl@dpg-d7ohmhpj2pic73abp6l0-a.oregon-postgres.render.com:5432/shopnow_663n?sslmode=require
       - key: RABBITMQ_HOST
         value: beaver.rmq.cloudamqp.com
       - key: RABBITMQ_PORT
@@ -88,9 +92,11 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
+        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
       - key: POSTGRES_SSLMODE
         value: require
+      - key: DATABASE_URL
+        value: postgresql://shopnow_663n_user:mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl@dpg-d7ohmhpj2pic73abp6l0-a.oregon-postgres.render.com:5432/shopnow_663n?sslmode=require
       - key: RABBITMQ_HOST
         value: beaver.rmq.cloudamqp.com
       - key: RABBITMQ_PORT
@@ -132,9 +138,11 @@ services:
       - key: POSTGRES_USER
         value: shopnow_663n_user
       - key: POSTGRES_PASSWORD
-        value: mJKZ4Bs3pW5XqeK5c5FLIukVy1TUGEII
+        value: mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl
       - key: POSTGRES_SSLMODE
         value: require
+      - key: DATABASE_URL
+        value: postgresql://shopnow_663n_user:mJKZ4Bs3pW5XqeK5c5FLlukVy1TUGEIl@dpg-d7ohmhpj2pic73abp6l0-a.oregon-postgres.render.com:5432/shopnow_663n?sslmode=require
       - key: RABBITMQ_HOST
         value: beaver.rmq.cloudamqp.com
       - key: RABBITMQ_PORT

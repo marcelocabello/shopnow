@@ -16,6 +16,7 @@ SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 DEFAULT_DB = "shopnow_663n"
 DEFAULT_USER = "shopnow_663n_user"
 DEFAULT_SSLMODE = os.getenv("POSTGRES_SSLMODE", "prefer")
+_COLUMN_CACHE: dict[str, set[str]] = {}
 
 
 def postgres_enabled() -> bool:
@@ -70,6 +71,19 @@ def ensure_schema() -> None:
             cur.execute("SELECT to_regclass('public.clientes')")
             if cur.fetchone()[0] is None:
                 cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+            # Compatibilidad con BD existente (si el usuario tiene permisos de ALTER).
+            try:
+                cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS rfc VARCHAR(20)")
+                cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_registro DATE")
+                cur.execute("UPDATE clientes SET rfc = '' WHERE rfc IS NULL")
+                cur.execute("ALTER TABLE clientes ALTER COLUMN rfc SET DEFAULT ''")
+
+                cur.execute("ALTER TABLE productos ADD COLUMN IF NOT EXISTS categoria VARCHAR(100)")
+                cur.execute("UPDATE productos SET categoria = 'General' WHERE categoria IS NULL")
+                cur.execute("ALTER TABLE productos ALTER COLUMN categoria SET DEFAULT 'General'")
+            except Exception:
+                conn.rollback()
+                cur.execute("SELECT pg_advisory_lock(663001)")
             cur.execute("SELECT pg_advisory_unlock(663001)")
 
 
@@ -92,41 +106,74 @@ def seed_demo_data_if_enabled() -> None:
                 inventario_count = int(cur.fetchone()[0])
                 cur.execute("SELECT COUNT(*) FROM pedidos")
                 pedidos_count = int(cur.fetchone()[0])
+                cliente_cols = _table_columns("clientes")
+                producto_cols = _table_columns("productos")
+                has_rfc = "rfc" in cliente_cols
+                has_fecha = "fecha_registro" in cliente_cols
+                has_categoria = "categoria" in producto_cols
 
                 # Clientes
                 if clientes_count == 0:
                     for i in range(1, 21):
-                        cur.execute(
-                            """
-                            INSERT INTO clientes (nombre, correo, direccion, telefono, activo, rfc, fecha_registro)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                f"Cliente Demo {i:02d}",
-                                f"cliente.demo{i:02d}@shopnow.test",
-                                f"Calle Demo #{100+i}, Queretaro",
-                                f"{4420000000 + i:010d}",
-                                True,
-                                f"DEMO{i:02d}0101AAA",
-                                "2026-05-25",
-                            ),
-                        )
+                        if has_rfc and has_fecha:
+                            cur.execute(
+                                """
+                                INSERT INTO clientes (nombre, correo, direccion, telefono, activo, rfc, fecha_registro)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    f"Cliente Demo {i:02d}",
+                                    f"cliente.demo{i:02d}@shopnow.test",
+                                    f"Calle Demo #{100+i}, Queretaro",
+                                    f"{4420000000 + i:010d}",
+                                    True,
+                                    f"DEMO{i:02d}0101AAA",
+                                    "2026-05-25",
+                                ),
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                INSERT INTO clientes (nombre, correo, direccion, telefono, activo)
+                                VALUES (%s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    f"Cliente Demo {i:02d}",
+                                    f"cliente.demo{i:02d}@shopnow.test",
+                                    f"Calle Demo #{100+i}, Queretaro",
+                                    f"{4420000000 + i:010d}",
+                                    True,
+                                ),
+                            )
 
                 # Productos
                 if productos_count == 0:
                     for i in range(1, 21):
-                        cur.execute(
-                            """
-                            INSERT INTO productos (descripcion, precio, activo, categoria)
-                            VALUES (%s, %s, %s, %s)
-                            """,
-                            (
-                                f"Producto Demo {i:02d}",
-                                float(50 + i * 7),
-                                True,
-                                "Demo",
-                            ),
-                        )
+                        if has_categoria:
+                            cur.execute(
+                                """
+                                INSERT INTO productos (descripcion, precio, activo, categoria)
+                                VALUES (%s, %s, %s, %s)
+                                """,
+                                (
+                                    f"Producto Demo {i:02d}",
+                                    float(50 + i * 7),
+                                    True,
+                                    "Demo",
+                                ),
+                            )
+                        else:
+                            cur.execute(
+                                """
+                                INSERT INTO productos (descripcion, precio, activo)
+                                VALUES (%s, %s, %s)
+                                """,
+                                (
+                                    f"Producto Demo {i:02d}",
+                                    float(50 + i * 7),
+                                    True,
+                                ),
+                            )
 
                 # Inventario (20 registros sobre los primeros 20 productos)
                 if inventario_count == 0:
@@ -187,10 +234,32 @@ def _execute(query: str, params: tuple[Any, ...] = ()) -> int:
             return cur.rowcount
 
 
-def read_clientes() -> list[dict[str, Any]]:
+def _table_columns(table_name: str) -> set[str]:
+    cached = _COLUMN_CACHE.get(table_name)
+    if cached is not None:
+        return cached
     rows = _fetch_all(
         """
-        SELECT id_cliente, nombre, correo, direccion, telefono, activo, rfc, fecha_registro
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        """,
+        (table_name,),
+    )
+    cols = {str(r["column_name"]) for r in rows}
+    _COLUMN_CACHE[table_name] = cols
+    return cols
+
+
+def read_clientes() -> list[dict[str, Any]]:
+    cliente_cols = _table_columns("clientes")
+    has_rfc = "rfc" in cliente_cols
+    has_fecha = "fecha_registro" in cliente_cols
+    rfc_select = "rfc" if has_rfc else "''::varchar AS rfc"
+    fecha_select = "fecha_registro" if has_fecha else "NULL::date AS fecha_registro"
+    rows = _fetch_all(
+        f"""
+        SELECT id_cliente, nombre, correo, direccion, telefono, activo, {rfc_select}, {fecha_select}
         FROM clientes
         ORDER BY id_cliente
         """
@@ -208,54 +277,102 @@ def cliente_exists(id_cliente: int) -> bool:
 
 
 def create_cliente(payload: dict[str, Any]) -> int:
-    row = _fetch_one(
-        """
-        INSERT INTO clientes (id_cliente, nombre, correo, direccion, telefono, activo, rfc, fecha_registro)
-        VALUES (
-            (SELECT COALESCE(MAX(id_cliente), 100) + 1 FROM clientes),
-            %s, %s, %s, %s, %s, %s, NULLIF(%s, '')::date
+    cliente_cols = _table_columns("clientes")
+    has_rfc = "rfc" in cliente_cols
+    has_fecha = "fecha_registro" in cliente_cols
+    if has_rfc and has_fecha:
+        row = _fetch_one(
+            """
+            INSERT INTO clientes (id_cliente, nombre, correo, direccion, telefono, activo, rfc, fecha_registro)
+            VALUES (
+                (SELECT COALESCE(MAX(id_cliente), 100) + 1 FROM clientes),
+                %s, %s, %s, %s, %s, %s, NULLIF(%s, '')::date
+            )
+            RETURNING id_cliente
+            """,
+            (
+                payload.get("nombre", ""),
+                payload.get("correo", ""),
+                payload.get("direccion", ""),
+                payload.get("telefono", ""),
+                payload.get("activo", True),
+                payload.get("rfc", ""),
+                payload.get("fecha_registro", ""),
+            ),
         )
-        RETURNING id_cliente
-        """,
-        (
-            payload.get("nombre", ""),
-            payload.get("correo", ""),
-            payload.get("direccion", ""),
-            payload.get("telefono", ""),
-            payload.get("activo", True),
-            payload.get("rfc", ""),
-            payload.get("fecha_registro", ""),
-        ),
-    )
+    else:
+        row = _fetch_one(
+            """
+            INSERT INTO clientes (id_cliente, nombre, correo, direccion, telefono, activo)
+            VALUES (
+                (SELECT COALESCE(MAX(id_cliente), 100) + 1 FROM clientes),
+                %s, %s, %s, %s, %s
+            )
+            RETURNING id_cliente
+            """,
+            (
+                payload.get("nombre", ""),
+                payload.get("correo", ""),
+                payload.get("direccion", ""),
+                payload.get("telefono", ""),
+                payload.get("activo", True),
+            ),
+        )
     return int(row["id_cliente"])
 
 
 def update_cliente(id_cliente: int, payload: dict[str, Any]) -> bool:
-    row = _fetch_one(
-        """
-        UPDATE clientes
-        SET
-            nombre = COALESCE(%s, nombre),
-            correo = COALESCE(%s, correo),
-            direccion = COALESCE(%s, direccion),
-            telefono = COALESCE(%s, telefono),
-            activo = COALESCE(%s, activo),
-            rfc = COALESCE(%s, rfc),
-            fecha_registro = COALESCE(NULLIF(%s, '')::date, fecha_registro)
-        WHERE id_cliente = %s
-        RETURNING id_cliente
-        """,
-        (
-            payload.get("nombre"),
-            payload.get("correo"),
-            payload.get("direccion"),
-            payload.get("telefono"),
-            payload.get("activo"),
-            payload.get("rfc"),
-            payload.get("fecha_registro"),
-            id_cliente,
-        ),
-    )
+    cliente_cols = _table_columns("clientes")
+    has_rfc = "rfc" in cliente_cols
+    has_fecha = "fecha_registro" in cliente_cols
+    if has_rfc and has_fecha:
+        row = _fetch_one(
+            """
+            UPDATE clientes
+            SET
+                nombre = COALESCE(%s, nombre),
+                correo = COALESCE(%s, correo),
+                direccion = COALESCE(%s, direccion),
+                telefono = COALESCE(%s, telefono),
+                activo = COALESCE(%s, activo),
+                rfc = COALESCE(%s, rfc),
+                fecha_registro = COALESCE(NULLIF(%s, '')::date, fecha_registro)
+            WHERE id_cliente = %s
+            RETURNING id_cliente
+            """,
+            (
+                payload.get("nombre"),
+                payload.get("correo"),
+                payload.get("direccion"),
+                payload.get("telefono"),
+                payload.get("activo"),
+                payload.get("rfc"),
+                payload.get("fecha_registro"),
+                id_cliente,
+            ),
+        )
+    else:
+        row = _fetch_one(
+            """
+            UPDATE clientes
+            SET
+                nombre = COALESCE(%s, nombre),
+                correo = COALESCE(%s, correo),
+                direccion = COALESCE(%s, direccion),
+                telefono = COALESCE(%s, telefono),
+                activo = COALESCE(%s, activo)
+            WHERE id_cliente = %s
+            RETURNING id_cliente
+            """,
+            (
+                payload.get("nombre"),
+                payload.get("correo"),
+                payload.get("direccion"),
+                payload.get("telefono"),
+                payload.get("activo"),
+                id_cliente,
+            ),
+        )
     return row is not None
 
 
@@ -264,9 +381,11 @@ def inactivate_cliente(id_cliente: int) -> bool:
 
 
 def read_productos() -> list[dict[str, Any]]:
+    product_cols = _table_columns("productos")
+    categoria_select = "categoria" if "categoria" in product_cols else "'General'::varchar AS categoria"
     rows = _fetch_all(
-        """
-        SELECT id_producto, descripcion, precio, activo, categoria
+        f"""
+        SELECT id_producto, descripcion, precio, activo, {categoria_select}
         FROM productos
         ORDER BY id_producto
         """
@@ -281,45 +400,83 @@ def producto_exists(id_producto: int) -> bool:
 
 
 def create_producto(payload: dict[str, Any]) -> int:
-    row = _fetch_one(
-        """
-        INSERT INTO productos (id_producto, descripcion, precio, activo, categoria)
-        VALUES (
-            (SELECT COALESCE(MAX(id_producto), 0) + 1 FROM productos),
-            %s, %s, %s, %s
+    product_cols = _table_columns("productos")
+    if "categoria" in product_cols:
+        row = _fetch_one(
+            """
+            INSERT INTO productos (id_producto, descripcion, precio, activo, categoria)
+            VALUES (
+                (SELECT COALESCE(MAX(id_producto), 0) + 1 FROM productos),
+                %s, %s, %s, %s
+            )
+            RETURNING id_producto
+            """,
+            (
+                payload.get("descripcion", ""),
+                payload.get("precio", 0),
+                payload.get("activo", True),
+                payload.get("categoria", ""),
+            ),
         )
-        RETURNING id_producto
-        """,
-        (
-            payload.get("descripcion", ""),
-            payload.get("precio", 0),
-            payload.get("activo", True),
-            payload.get("categoria", ""),
-        ),
-    )
+    else:
+        row = _fetch_one(
+            """
+            INSERT INTO productos (id_producto, descripcion, precio, activo)
+            VALUES (
+                (SELECT COALESCE(MAX(id_producto), 0) + 1 FROM productos),
+                %s, %s, %s
+            )
+            RETURNING id_producto
+            """,
+            (
+                payload.get("descripcion", ""),
+                payload.get("precio", 0),
+                payload.get("activo", True),
+            ),
+        )
     return int(row["id_producto"])
 
 
 def update_producto(id_producto: int, payload: dict[str, Any]) -> bool:
-    row = _fetch_one(
-        """
-        UPDATE productos
-        SET
-            descripcion = COALESCE(%s, descripcion),
-            precio = COALESCE(%s, precio),
-            activo = COALESCE(%s, activo),
-            categoria = COALESCE(%s, categoria)
-        WHERE id_producto = %s
-        RETURNING id_producto
-        """,
-        (
-            payload.get("descripcion"),
-            payload.get("precio"),
-            payload.get("activo"),
-            payload.get("categoria"),
-            id_producto,
-        ),
-    )
+    product_cols = _table_columns("productos")
+    if "categoria" in product_cols:
+        row = _fetch_one(
+            """
+            UPDATE productos
+            SET
+                descripcion = COALESCE(%s, descripcion),
+                precio = COALESCE(%s, precio),
+                activo = COALESCE(%s, activo),
+                categoria = COALESCE(%s, categoria)
+            WHERE id_producto = %s
+            RETURNING id_producto
+            """,
+            (
+                payload.get("descripcion"),
+                payload.get("precio"),
+                payload.get("activo"),
+                payload.get("categoria"),
+                id_producto,
+            ),
+        )
+    else:
+        row = _fetch_one(
+            """
+            UPDATE productos
+            SET
+                descripcion = COALESCE(%s, descripcion),
+                precio = COALESCE(%s, precio),
+                activo = COALESCE(%s, activo)
+            WHERE id_producto = %s
+            RETURNING id_producto
+            """,
+            (
+                payload.get("descripcion"),
+                payload.get("precio"),
+                payload.get("activo"),
+                id_producto,
+            ),
+        )
     return row is not None
 
 
