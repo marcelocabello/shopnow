@@ -265,6 +265,11 @@ def read_clientes() -> list[dict[str, Any]]:
         """
     )
     for row in rows:
+        row["nombre"] = row.get("nombre") or ""
+        row["correo"] = row.get("correo") or ""
+        row["direccion"] = row.get("direccion") or ""
+        row["telefono"] = row.get("telefono") or ""
+        row["rfc"] = row.get("rfc") or ""
         if row.get("fecha_registro") is not None:
             row["fecha_registro"] = row["fecha_registro"].isoformat()
         else:

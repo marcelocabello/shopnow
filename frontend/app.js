@@ -400,7 +400,6 @@ function PedidosPanel({ token }) {
 function InventarioPanel({ token }) {
   const [rows, setRows] = useState([]);
   const [msg, setMsg] = useState("");
-  const [form, setForm] = useState({ id_producto: "", cantidad: "" });
   const [plus, setPlus] = useState({ id_producto: "", cantidad: "" });
   const [minus, setMinus] = useState({ id_producto: "", cantidad: "" });
 
@@ -426,14 +425,8 @@ function InventarioPanel({ token }) {
   return (
     <div className="space-y-4">
       <button className="rounded-lg bg-sky px-4 py-2 text-sm font-bold text-slate-950" onClick={load}>Refrescar</button>
+      <p className="text-sm text-slate-300">Inventario no da de alta productos. Primero crea en Productos y aqui solo agrega o descuenta stock.</p>
       {msg && <p className="text-sm text-amber-300">{msg}</p>}
-      <Card title="Registrar Producto en Inventario">
-        <div className="grid gap-2 md:grid-cols-2">
-          <Input label="ID producto" type="number" value={form.id_producto} onChange={(e) => setForm({ ...form, id_producto: e.target.value })} />
-          <Input label="Cantidad inicial" type="number" value={form.cantidad} onChange={(e) => setForm({ ...form, cantidad: e.target.value })} />
-        </div>
-        <button className="mt-3 rounded-lg bg-aqua px-4 py-2 text-sm font-semibold text-slate-950" onClick={() => call(SERVICES.inventario.createPath, { id_producto: Number(form.id_producto), cantidad: Number(form.cantidad) })}>Registrar</button>
-      </Card>
       <Card title="Agregar Stock">
         <div className="grid gap-2 md:grid-cols-2">
           <Input label="ID producto" type="number" value={plus.id_producto} onChange={(e) => setPlus({ ...plus, id_producto: e.target.value })} />
@@ -463,48 +456,45 @@ function GeneralPanel({ tokens }) {
   const [msg, setMsg] = useState("");
 
   const loadAll = async () => {
-    try {
-      const next = {
-        clientes: [],
-        productos: [],
-        pedidos: [],
-        inventario: [],
-      };
-      const jobs = [];
-      if (tokens.clientes) {
-        jobs.push(
-          apiFetch(`/clientes${SERVICES.clientes.listPath}`, { token: tokens.clientes }).then((rows) => {
-            next.clientes = rows;
-          })
-        );
-      }
-      if (tokens.productos) {
-        jobs.push(
-          apiFetch(`/productos${SERVICES.productos.listPath}`, { token: tokens.productos }).then((rows) => {
-            next.productos = rows;
-          })
-        );
-      }
-      if (tokens.pedidos) {
-        jobs.push(
-          apiFetch(`/pedidos${SERVICES.pedidos.listPath}`, { token: tokens.pedidos }).then((rows) => {
-            next.pedidos = rows;
-          })
-        );
-      }
-      if (tokens.inventario) {
-        jobs.push(
-          apiFetch(`/inventario${SERVICES.inventario.listPath}`, { token: tokens.inventario }).then((rows) => {
-            next.inventario = rows;
-          })
-        );
-      }
-      await Promise.all(jobs);
-      setData(next);
-      setMsg("");
-    } catch (e) {
-      setMsg(e.message);
+    const next = {
+      clientes: [],
+      productos: [],
+      pedidos: [],
+      inventario: [],
+    };
+    const jobs = [];
+    if (tokens.clientes) {
+      jobs.push(
+        apiFetch(`/clientes${SERVICES.clientes.listPath}`, { token: tokens.clientes }).then((rows) => {
+          next.clientes = rows;
+        })
+      );
     }
+    if (tokens.productos) {
+      jobs.push(
+        apiFetch(`/productos${SERVICES.productos.listPath}`, { token: tokens.productos }).then((rows) => {
+          next.productos = rows;
+        })
+      );
+    }
+    if (tokens.pedidos) {
+      jobs.push(
+        apiFetch(`/pedidos${SERVICES.pedidos.listPath}`, { token: tokens.pedidos }).then((rows) => {
+          next.pedidos = rows;
+        })
+      );
+    }
+    if (tokens.inventario) {
+      jobs.push(
+        apiFetch(`/inventario${SERVICES.inventario.listPath}`, { token: tokens.inventario }).then((rows) => {
+          next.inventario = rows;
+        })
+      );
+    }
+    const results = await Promise.allSettled(jobs);
+    const failed = results.find((r) => r.status === "rejected");
+    setData(next);
+    setMsg(failed ? failed.reason?.message || "Error parcial al cargar servicios" : "");
   };
 
   useEffect(() => {
