@@ -131,16 +131,28 @@ def _procesar_pedido_data(id_cliente: int, id_producto: int, cantidad: int, prec
         routing_key=ROUTING_KEYS['descontar_inventario'],
         message={'id_producto': id_producto, 'cantidad': cantidad}
     )
-    if resp is None:
-        raise RuntimeError("Timeout al descontar inventario")
-    if not resp.get('exito'):
-        detalle = str(resp.get("error") or "Error al descontar inventario")
-        detalle_l = detalle.lower()
-        # Errores de negocio: no reencolar.
-        if "stock insuficiente" in detalle_l or "producto no encontrado" in detalle_l:
-            raise HTTPException(status_code=400, detail=detalle)
-        # Errores internos/transitorios: sí reencolar.
-        raise HTTPException(status_code=503, detail=detalle)
+    if resp is None or not resp.get('exito'):
+        # Fallback operativo: si Rabbit request-reply falla, intenta descuento
+        # directo en Postgres para no dejar pedidos "encolados sin efecto".
+        if storage.postgres_enabled():
+            try:
+                db_resp = storage.descontar_inventario(int(id_producto), int(cantidad))
+            except Exception as exc:
+                raise RuntimeError(f"Timeout/fallo Rabbit y fallback DB falló: {exc}") from exc
+            if not db_resp.get("exito"):
+                detalle_db = str(db_resp.get("error") or "Error al descontar inventario en DB")
+                detalle_l = detalle_db.lower()
+                if "stock insuficiente" in detalle_l or "producto no encontrado" in detalle_l:
+                    raise HTTPException(status_code=400, detail=detalle_db)
+                raise HTTPException(status_code=503, detail=detalle_db)
+        else:
+            if resp is None:
+                raise RuntimeError("Timeout al descontar inventario")
+            detalle = str(resp.get("error") or "Error al descontar inventario")
+            detalle_l = detalle.lower()
+            if "stock insuficiente" in detalle_l or "producto no encontrado" in detalle_l:
+                raise HTTPException(status_code=400, detail=detalle)
+            raise HTTPException(status_code=503, detail=detalle)
 
     # Persistir pedido
     subtotal = float(precio_unitario) * int(cantidad)
