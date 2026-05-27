@@ -16,6 +16,7 @@ from ui_pages import render_service_ui
 
 
 STARTUP_ERROR: str | None = None
+RK_PEDIDO_EVENTO = "pedidos.evento"
 
 
 @asynccontextmanager
@@ -37,6 +38,9 @@ async def lifespan(app):
         mq_client.declare_queue("pedidos_requests")
         mq_client.bind_queue("pedidos_requests", "servicios", ROUTING_KEYS["crear_pedido"])
         mq_client.start_consumer_thread("pedidos_requests", handle_pedido_message)
+        mq_client.declare_queue("pedidos_eventos")
+        mq_client.bind_queue("pedidos_eventos", "servicios", RK_PEDIDO_EVENTO)
+        mq_client.start_consumer_thread("pedidos_eventos", handle_pedido_evento_message)
         print("✓ Consumidor RabbitMQ de Pedidos activo")
     except Exception as exc:
         print(f"⚠ Pedidos sin consumidor RabbitMQ: {exc}")
@@ -311,6 +315,33 @@ def _publicar_pedido_encolado(p: PedidoRegistro, precio_unitario: float):
     )
 
 
+def _publicar_evento_pedido(id_pedido: int, p: PedidoRegistro, precio_unitario: float):
+    """Publica un evento de post-proceso del pedido (no crítico)."""
+    mq_client.publish(
+        exchange='servicios',
+        routing_key=RK_PEDIDO_EVENTO,
+        message={
+            "id_pedido": int(id_pedido),
+            "id_cliente": p.id_cliente,
+            "id_producto": p.id_producto,
+            "cantidad": p.cantidad,
+            "descuento_pct": p.descuento_pct,
+            "precio_unitario": float(precio_unitario),
+        },
+    )
+
+
+def handle_pedido_evento_message(ch, method, properties, body):
+    """Consumidor de eventos post-pedido (no bloquea el flujo de negocio)."""
+    try:
+        message = json.loads(body)
+        print(f"📦 Evento pedido recibido: {message}")
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    except Exception as e:
+        print(f"⚠ Error procesando evento de pedido: {e}")
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+
 # ============================================================================
 # AUTENTICACIÓN
 # ============================================================================
@@ -376,7 +407,7 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
     }
 )
 def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
-    """Orquesta validaciones REST y encola pedido para procesamiento async."""
+    """Orquesta validaciones REST, procesa pedido y encola evento async."""
     if STARTUP_ERROR:
         raise HTTPException(
             status_code=503,
@@ -384,13 +415,27 @@ def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
         )
     precio_unitario = _validar_dependencias_rest(p.id_cliente, p.id_producto, p.cantidad)
     try:
-        _publicar_pedido_encolado(p, precio_unitario)
+        id_pedido = _procesar_pedido_data(
+            id_cliente=p.id_cliente,
+            id_producto=p.id_producto,
+            cantidad=p.cantidad,
+            precio_unitario=float(precio_unitario),
+            descuento_pct=float(p.descuento_pct),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"No se pudo procesar el pedido: {exc}") from exc
+
+    # Evento de post-proceso (si falla, no tumba la operación principal).
+    try:
+        _publicar_evento_pedido(int(id_pedido), p, float(precio_unitario))
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"No se pudo encolar el pedido: {exc}") from exc
+        print(f"⚠ Pedido {id_pedido} creado, pero no se pudo publicar evento RabbitMQ: {exc}")
+
     return {
-        "mensaje": "Pedido encolado exitosamente",
-        "status": "queued",
-        "nota": "Se procesará en segundo plano vía RabbitMQ",
+        "mensaje": "Pedido creado exitosamente",
+        "status": "success",
+        "id_pedido": int(id_pedido),
+        "nota": "Evento de post-proceso encolado en RabbitMQ",
     }
 
 
