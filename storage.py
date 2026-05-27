@@ -17,6 +17,9 @@ DEFAULT_DB = "shopnow_663n"
 DEFAULT_USER = "shopnow_663n_user"
 DEFAULT_SSLMODE = os.getenv("POSTGRES_SSLMODE", "prefer")
 _COLUMN_CACHE: dict[str, set[str]] = {}
+SP_CLIENTES_LISTAR = os.getenv("SP_CLIENTES_LISTAR", "MCG_CabelloMarcelo_Clientes_Listar")
+SP_PEDIDOS_CREAR = os.getenv("SP_PEDIDOS_CREAR", "sp_crear_pedido")
+SP_INVENTARIO_DESCONTAR = os.getenv("SP_INVENTARIO_DESCONTAR", "sp_descontar_inventario")
 
 
 def postgres_enabled() -> bool:
@@ -255,7 +258,28 @@ def _table_columns(table_name: str) -> set[str]:
     return cols
 
 
+def _function_exists(signature: str) -> bool:
+    row = _fetch_one("SELECT to_regprocedure(%s) AS f", (signature,))
+    return bool(row and row.get("f"))
+
+
 def read_clientes() -> list[dict[str, Any]]:
+    # Si existe el SP oficial de alumnos, se usa como fuente principal.
+    sp_signature = f"{SP_CLIENTES_LISTAR}()"
+    if _function_exists(sp_signature):
+        rows = _fetch_all(f"SELECT * FROM {SP_CLIENTES_LISTAR}()")
+        for row in rows:
+            row["nombre"] = row.get("nombre") or ""
+            row["correo"] = row.get("correo") or ""
+            row["direccion"] = row.get("direccion") or ""
+            row["telefono"] = row.get("telefono") or ""
+            row["rfc"] = row.get("rfc") or ""
+            if row.get("fecha_registro") is not None and hasattr(row["fecha_registro"], "isoformat"):
+                row["fecha_registro"] = row["fecha_registro"].isoformat()
+            elif row.get("fecha_registro") is None:
+                row["fecha_registro"] = ""
+        return rows
+
     cliente_cols = _table_columns("clientes")
     has_rfc = "rfc" in cliente_cols
     has_fecha = "fecha_registro" in cliente_cols
@@ -537,26 +561,85 @@ def agregar_inventario(id_producto: int, cantidad: int) -> bool:
 
 
 def descontar_inventario(id_producto: int, cantidad: int) -> dict[str, Any]:
-    row = _fetch_one(
-        """
-        SELECT exito, nueva_cantidad, error
-        FROM sp_descontar_inventario(%s, %s)
-        """,
-        (id_producto, cantidad),
-    )
-    if not row:
-        return {"exito": False, "error": "Error inesperado en procedimiento", "id_producto": id_producto}
-    if not bool(row["exito"]):
+    try:
+        row = _fetch_one(
+            """
+            SELECT exito, nueva_cantidad, error
+            FROM """ + SP_INVENTARIO_DESCONTAR + """(%s, %s)
+            """,
+            (id_producto, cantidad),
+        )
+        if not row:
+            return {"exito": False, "error": "Error inesperado en procedimiento", "id_producto": id_producto}
+        if not bool(row["exito"]):
+            return {
+                "exito": False,
+                "error": row.get("error") or "No fue posible descontar inventario",
+                "id_producto": id_producto,
+            }
+        return {
+            "exito": True,
+            "id_producto": id_producto,
+            "nueva_cantidad": int(row["nueva_cantidad"]),
+        }
+    except Exception as exc:
+        # Compatibilidad con esquemas donde no existe sp_descontar_inventario.
+        if SP_INVENTARIO_DESCONTAR not in str(exc):
+            return {
+                "exito": False,
+                "error": f"Error al descontar inventario: {exc}",
+                "id_producto": id_producto,
+            }
+
+    # Fallback transaccional sin SP: SELECT FOR UPDATE + UPDATE.
+    try:
+        with _connect() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT cantidad
+                    FROM inventario
+                    WHERE id_producto = %s
+                    FOR UPDATE
+                    """,
+                    (id_producto,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return {
+                        "exito": False,
+                        "error": "Producto no encontrado",
+                        "id_producto": id_producto,
+                    }
+                stock_actual = int(row["cantidad"])
+                if stock_actual < int(cantidad):
+                    return {
+                        "exito": False,
+                        "error": "Stock insuficiente",
+                        "id_producto": id_producto,
+                    }
+                cur.execute(
+                    """
+                    UPDATE inventario
+                    SET cantidad = cantidad - %s
+                    WHERE id_producto = %s
+                    RETURNING cantidad
+                    """,
+                    (cantidad, id_producto),
+                )
+                updated = cur.fetchone()
+                nueva_cantidad = int(updated["cantidad"]) if updated else stock_actual - int(cantidad)
+                return {
+                    "exito": True,
+                    "id_producto": id_producto,
+                    "nueva_cantidad": nueva_cantidad,
+                }
+    except Exception as exc:
         return {
             "exito": False,
-            "error": row.get("error") or "No fue posible descontar inventario",
+            "error": f"Error al descontar inventario (fallback): {exc}",
             "id_producto": id_producto,
         }
-    return {
-        "exito": True,
-        "id_producto": id_producto,
-        "nueva_cantidad": int(row["nueva_cantidad"]),
-    }
 
 
 def read_pedidos() -> list[dict[str, Any]]:
@@ -606,7 +689,7 @@ def create_pedido(
     else:
         row = _fetch_one(
             """
-            SELECT sp_crear_pedido(%s, %s, %s) AS id_pedido
+            SELECT """ + SP_PEDIDOS_CREAR + """(%s, %s, %s) AS id_pedido
             """,
             (id_cliente, id_producto, cantidad),
         )
