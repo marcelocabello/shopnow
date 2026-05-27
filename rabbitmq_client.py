@@ -10,7 +10,7 @@ from pika import (
 )
 import json
 import uuid
-from typing import Callable, Dict, Any, Optional
+from typing import Callable, Dict, Any, Optional, List, Tuple
 import threading
 import time
 
@@ -264,6 +264,33 @@ class RabbitMQClient:
         thread = threading.Thread(
             target=self.consume,
             args=(queue_name, callback, auto_ack)
+        )
+        thread.daemon = True
+        thread.start()
+        return thread
+
+    def consume_many(self, consumers: List[Tuple[str, Callable, bool]]):
+        """Consume múltiples colas en un solo loop de consumo del mismo canal."""
+        self.channel.basic_qos(prefetch_count=1)
+        for queue_name, callback, auto_ack in consumers:
+            self.channel.basic_consume(
+                queue=queue_name,
+                on_message_callback=callback,
+                auto_ack=auto_ack
+            )
+        queue_names = ", ".join(q for q, _, _ in consumers)
+        try:
+            print(f"🔄 Escuchando mensajes en colas: {queue_names}")
+            self.channel.start_consuming()
+        except KeyboardInterrupt:
+            print(f"⏹ Deteniendo consumidores de: {queue_names}")
+            self.channel.stop_consuming()
+
+    def start_multi_consumer_thread(self, consumers: List[Tuple[str, Callable, bool]]):
+        """Inicia un hilo consumidor para múltiples colas."""
+        thread = threading.Thread(
+            target=self.consume_many,
+            args=(consumers,)
         )
         thread.daemon = True
         thread.start()

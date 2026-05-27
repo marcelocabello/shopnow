@@ -17,6 +17,8 @@ from ui_pages import render_service_ui
 
 STARTUP_ERROR: str | None = None
 RK_PEDIDO_EVENTO = "pedidos.evento"
+RK_PEDIDO_DLQ = "pedidos.crear.dlq"
+MAX_REINTENTOS_PEDIDO = int(os.getenv("MAX_REINTENTOS_PEDIDO", "8"))
 
 
 @asynccontextmanager
@@ -37,10 +39,14 @@ async def lifespan(app):
         mq_client.declare_exchange("servicios", "direct")
         mq_client.declare_queue("pedidos_requests")
         mq_client.bind_queue("pedidos_requests", "servicios", ROUTING_KEYS["crear_pedido"])
-        mq_client.start_consumer_thread("pedidos_requests", handle_pedido_message)
         mq_client.declare_queue("pedidos_eventos")
         mq_client.bind_queue("pedidos_eventos", "servicios", RK_PEDIDO_EVENTO)
-        mq_client.start_consumer_thread("pedidos_eventos", handle_pedido_evento_message)
+        mq_client.declare_queue("pedidos_dead_letter")
+        mq_client.bind_queue("pedidos_dead_letter", "servicios", RK_PEDIDO_DLQ)
+        mq_client.start_multi_consumer_thread([
+            ("pedidos_requests", handle_pedido_message, False),
+            ("pedidos_eventos", handle_pedido_evento_message, False),
+        ])
         print("✓ Consumidor RabbitMQ de Pedidos activo")
     except Exception as exc:
         print(f"⚠ Pedidos sin consumidor RabbitMQ: {exc}")
@@ -277,20 +283,33 @@ def handle_pedido_message(ch, method, properties, body):
         descuento_pct = float(message.get('descuento_pct', 0))
 
         id_pedido = _procesar_pedido_data(id_cliente, id_producto, cantidad, precio_unitario, descuento_pct)
+        try:
+            _publicar_evento_pedido(
+                int(id_pedido),
+                PedidoRegistro(
+                    id_cliente=int(id_cliente),
+                    id_producto=int(id_producto),
+                    cantidad=int(cantidad),
+                    descuento_pct=float(descuento_pct),
+                ),
+                float(precio_unitario),
+            )
+        except Exception as exc:
+            print(f"⚠ Pedido {id_pedido} procesado, pero falló evento post-proceso: {exc}")
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
         print(f"✓ Pedido {id_pedido} procesado y guardado desde cola")
 
     except RuntimeError as e:
-        # Timeout - servicio caído, reencolar para reintento
-        print(f"⚠ Timeout al procesar pedido encolado ({e}). Reencolándolo...")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+        # Timeout - servicio caído, reintentar con límite para evitar limbo infinito.
+        print(f"⚠ Timeout al procesar pedido encolado ({e}).")
+        _reintentar_o_mandar_dlq(ch, method, properties, body, str(e))
 
     except HTTPException as e:
-        # 5xx/transitorio -> requeue; 4xx/negocio -> rechazo definitivo
+        # 5xx/transitorio -> reintento con límite; 4xx/negocio -> rechazo definitivo
         if int(getattr(e, "status_code", 500)) >= 500:
-            print(f"⚠ Error transitorio procesando pedido ({e.detail}). Reencolando...")
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            print(f"⚠ Error transitorio procesando pedido ({e.detail}).")
+            _reintentar_o_mandar_dlq(ch, method, properties, body, str(e.detail))
         else:
             print(f"✗ Pedido inválido, rechazando (sin requeue): {e.detail}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
@@ -298,6 +317,43 @@ def handle_pedido_message(ch, method, properties, body):
     except Exception as e:
         print(f"✗ Error inesperado procesando pedido: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+
+def _reintentar_o_mandar_dlq(ch, method, properties, body, motivo: str):
+    """Reencola con contador explícito y envía a DLQ al superar el límite."""
+    headers = dict(getattr(properties, "headers", {}) or {})
+    intento = int(headers.get("x-retry-count", 0))
+    if intento >= MAX_REINTENTOS_PEDIDO:
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = {"raw": body.decode("utf-8", errors="ignore")}
+        mq_client.publish(
+            exchange="servicios",
+            routing_key=RK_PEDIDO_DLQ,
+            message={
+                "motivo": motivo,
+                "reintentos": intento,
+                "payload": payload,
+                "fecha": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        print(f"✗ Pedido enviado a DLQ tras {intento} reintentos")
+        return
+
+    nuevo_intento = intento + 1
+    ch.basic_publish(
+        exchange="servicios",
+        routing_key=ROUTING_KEYS["crear_pedido"],
+        body=body,
+        properties=pika.BasicProperties(
+            headers={"x-retry-count": nuevo_intento},
+            delivery_mode=2,
+        ),
+    )
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+    print(f"↻ Reencolado pedido, intento {nuevo_intento}/{MAX_REINTENTOS_PEDIDO}")
 
 
 def _publicar_pedido_encolado(p: PedidoRegistro, precio_unitario: float):
@@ -407,7 +463,7 @@ def obtener_pedidos(usuario: str = Depends(verificar_token)):
     }
 )
 def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
-    """Orquesta validaciones REST, procesa pedido y encola evento async."""
+    """Orquesta validaciones REST, guarda pedido y publica evento async."""
     if STARTUP_ERROR:
         raise HTTPException(
             status_code=503,
@@ -425,7 +481,7 @@ def crear_pedido(p: PedidoRegistro, usuario: str = Depends(verificar_token)):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=f"No se pudo procesar el pedido: {exc}") from exc
 
-    # Evento de post-proceso (si falla, no tumba la operación principal).
+    # Rabbit queda como post-proceso no crítico (igual que el enfoque de tu compañero).
     try:
         _publicar_evento_pedido(int(id_pedido), p, float(precio_unitario))
     except Exception as exc:
